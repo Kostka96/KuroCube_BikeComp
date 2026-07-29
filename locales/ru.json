@@ -1,0 +1,24 @@
+{
+  "meta_language_name": "Русский",
+  "speed_text": "Скорость",
+  "speed_unit_metric": "км/ч",
+  "speed_unit_imperial": "миль/ч",
+  "distance_unit_metric": "км",
+  "distance_unit_imperial": "миль",
+  "average_speed": "Средняя",
+  "max_speed": "Макс",
+  "climb": "Уклон",
+  "trip_distance": "Пробег заезда",
+  "total_distance": "Весь пробег",
+  "trip_time": "Время заезда",
+  "altitude_unit_metric": "м",
+  "altitude_unit_imperial": "фут",
+  "temp_unit_metric": "°C",
+  "temp_unit_imperial": "°F",
+  "pressure": "Давление",
+  "months": [
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря"
+  ],
+  "date_format": "%d %B %Y"
+}

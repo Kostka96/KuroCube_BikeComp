@@ -1,0 +1,17 @@
+# Виртуальное окружение
+.venv/
+venv/
+ENV/
+
+# Кеш Python и временные файлы
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Настройки IDE (PyCharm)
+.idea/
+
+# Локальные конфиги с личными данными (опционально)
+config.ini
+OpenStreetMap/

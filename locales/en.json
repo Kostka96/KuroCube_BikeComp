@@ -1,0 +1,24 @@
+{
+  "meta_language_name": "English",
+  "speed_text": "Speed",
+  "speed_unit_metric": "km/h",
+  "speed_unit_imperial": "mi/h",
+  "average_speed": "Average",
+  "max_speed": "Max",
+  "climb": "Climb",
+  "trip_distance": "Trip distance",
+  "total_distance": "Total distance",
+  "distance_unit_metric": "km",
+  "distance_unit_imperial": "mi",
+  "trip_time": "Trip time",
+  "altitude_unit_metric": "m",
+  "altitude_unit_imperial": "ft",
+  "temp_unit_metric": "°C",
+  "temp_unit_imperial": "°F",
+  "pressure": "Pressure",
+  "months": [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+  ],
+  "date_format": "%B %d, %Y"
+}
