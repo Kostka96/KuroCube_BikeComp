@@ -390,11 +390,7 @@ class BikeComputerWindow(QMainWindow):
         if hasattr(self, 'lbl_temp_unit'): self.lbl_temp_unit.setText(temp_unit)
 
     def toggle_settings(self):
-        if hasattr(self, 'frame_settings'):
-            if self.frame_settings.isVisible():
-                self.frame_settings.hide()
-            else:
-                self.frame_settings.show()
+        self.stackedWidget.setCurrentIndex(1)
 
     def format_date(self, dt_object: date) -> str:
         months_list = self.translations.get("months", [
