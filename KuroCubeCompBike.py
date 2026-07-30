@@ -6,7 +6,6 @@ import threading
 import configparser
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from datetime import date, datetime
-
 from PyQt6 import uic
 from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout
 from PyQt6.QtCore import QThread, pyqtSignal, QUrl, Qt, QSize
@@ -90,7 +89,7 @@ class BikeComputerWindow(QMainWindow):
         tiles_path = os.path.join(os.path.dirname(__file__), "OpenStreetMap")
         self.tile_server = TileServer(tiles_dir=tiles_path, port=8088)
         self.tile_server.start()
-
+        app.setStyle('Fusion')
         if hasattr(self, 'f_map'):
             if self.f_map.layout() is None:
                 layout = QVBoxLayout(self.f_map)
