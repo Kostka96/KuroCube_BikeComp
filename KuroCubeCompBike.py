@@ -12,7 +12,7 @@ from PyQt6.QtCore import QThread, pyqtSignal, QUrl, Qt, QSize
 from PyQt6.QtGui import QIcon, QPixmap, QColor, QPainter
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
-
+from T9Dialog import T9Dialog
 
 # =========================================================
 # СЕРВЕР ОФЛАЙН КАРТ (SimpleHTTPRequestHandler)
@@ -125,7 +125,7 @@ class BikeComputerWindow(QMainWindow):
             self.btn_settings.clicked.connect(self.toggle_settings)
         if hasattr(self, 'btn_close_settings'):
             self.btn_close_settings.clicked.connect(self.toggle_settings)
-
+        self.btn_settings_2.clicked.connect(self.open_keyboard)
         # --- 3. ПОТОК СЕРИАЛА ---
         self.serial_thread = SerialThread(port='/dev/ttyACM0')  # Проверь имя порта
         self.serial_thread.data_received.connect(self.update_telemetry)
@@ -260,6 +260,17 @@ class BikeComputerWindow(QMainWindow):
     # =========================================================
     # ГРАФИКА И ИКОНКИ (SVG)
     # =========================================================
+    def open_keyboard(self):
+        # Создаем диалог, передаем текущий текст (если есть)
+        dialog = T9Dialog(self, "Парк Горького")
+
+        # Показываем и ждем ответа. dialog.exec() вернет QDialog.Rejected или QDialog.Accepted
+        if dialog.exec() == T9Dialog.Accepted:
+            # Пользователь нажал "Готово"
+            entered_text = dialog.get_text()
+            print(f"Пользователь ввел: {entered_text}")
+            # Здесь вы можете записать этот текст в нужное место (например, в name маршрута)
+            # self.lbl_route_name.setText(entered_text)
 
     def get_colored_pixmap(self, svg_path, width, height, color):
         if not os.path.exists(svg_path):
