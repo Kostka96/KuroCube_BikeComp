@@ -48,11 +48,6 @@ def load_custom_fonts():
                 print(f"Загружен шрифт: {file} -> {family}")
             else:
                 print(f"Ошибка загрузки шрифта: {file}")
-
-    print("Доступные шрифты в базе Qt:", QFontDatabase.families())
-    print(f"Ищу шрифты в папке: {fonts_dir}")
-    for file in os.listdir(fonts_dir):
-        print(f"Найден файл: {file}")
     return loaded_fonts
 
 
@@ -127,7 +122,7 @@ class BikeComputerWindow(QMainWindow):
         FONTS = load_custom_fonts()
         self.config = configparser.ConfigParser()
         self.config_file = CONFIG_PATH
-
+        self.stackedWidget.setCurrentIndex(0)
         # --- 1. ЗАПУСК КАРТЫ И СЕРВЕРА ---
         tiles_path = os.path.join(RESOURCES_DIR, "OpenStreetMap")
         self.tile_server = TileServer(tiles_dir=tiles_path, port=8088)
@@ -168,7 +163,9 @@ class BikeComputerWindow(QMainWindow):
             self.btn_settings.clicked.connect(self.toggle_settings)
         if hasattr(self, 'btn_close_settings'):
             self.btn_close_settings.clicked.connect(self.toggle_settings)
-        self.btn_back_main.clicked.connect(self.open_keyboard)
+
+        self.btn_back_to_main.clicked.connect(lambda: self.stackedWidget.setCurrentIndex(0))
+
         # --- 3. ПОТОК СЕРИАЛА ---
         self.serial_thread = SerialThread(port='/dev/ttyACM0')  # Проверь имя порта
         self.serial_thread.data_received.connect(self.update_telemetry)
@@ -199,7 +196,9 @@ class BikeComputerWindow(QMainWindow):
             (self.btn_next, "player_forward", 24, 24, "#CCCCCC"),
             (self.btn_volume_plus, "volume-plus", 36, 36, "#CCCCCC"),
             (self.btn_volume_minus, "volume-minus", 36, 36, "#CCCCCC"),
-            (self.lst_settings_wifi, "wifi", 36, 36, "#CCCCCC"),
+            (self.btn_back_to_main, "btn_back", 36, 36, "#CCCCCC"),
+            (self.btn_settings_to_ui, "globus", 36, 36, "#CCCCCC"),
+            (self.btn_settings_to_wifi, "wifi", 36, 36, "#CCCCCC"),
         ]
         for widget, icon_name, w, h, color in button_icons:
             pixmap = load_icon(icon_name, w, h, color)
@@ -254,6 +253,22 @@ class BikeComputerWindow(QMainWindow):
                 (self.lbl_current_time_music, 16, QFont.Weight.Normal),
                 (self.lbl_music_name, 16, QFont.Weight.Normal),
                 (self.lbl_max_time_music, 16, QFont.Weight.Normal),
+
+                # --- Настройки: Интерфейс ---
+                (self.lbl_change_lang, 16, QFont.Weight.Normal),
+                (self.btn_change_lang, 16, QFont.Weight.Normal),
+                (self.lbl_change_unit_speed, 16, QFont.Weight.Normal),
+                (self.btn_change_unit_speed, 16, QFont.Weight.Normal),
+                (self.lbl_change_unit_distance, 15, QFont.Weight.Normal),
+                (self.btn_change_unit_distance, 16, QFont.Weight.Normal),
+                (self.lbl_change_unit_temp, 13, QFont.Weight.Normal),
+                (self.btn_change_unit_temp, 16, QFont.Weight.Normal),
+                (self.lbl_change_unit_time, 16, QFont.Weight.Normal),
+                (self.btn_change_unit_time, 16, QFont.Weight.Normal),
+                (self.lbl_change_unit_data, 16, QFont.Weight.Normal),
+                (self.btn_change_unit_data, 14, QFont.Weight.Normal),
+
+
             ]
 
             # --- Применяем одним циклом ---
