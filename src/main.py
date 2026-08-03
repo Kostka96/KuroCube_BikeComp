@@ -9,16 +9,58 @@ from datetime import date, datetime
 from PyQt6 import uic
 from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout
 from PyQt6.QtCore import QThread, pyqtSignal, QUrl, Qt, QSize
-from PyQt6.QtGui import QIcon, QPixmap, QColor, QPainter
+from PyQt6.QtGui import QIcon, QPixmap, QColor, QPainter, QFontDatabase, QFont
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 from T9Dialog import T9Dialog
+from ui_utils import load_icon
+
+SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.abspath(os.path.join(SRC_DIR, ".."))
+
+CONFIG_PATH = os.path.join(BASE_DIR, "config.ini")
+RESOURCES_DIR = os.path.join(BASE_DIR, "resources")
+
+# --- ЗАГРУЗКА ШРИФТА ---
+def load_custom_fonts():
+    """
+    Загружает все шрифты из папки resources/fonts/.
+    Возвращает словарь: {'имя_файла_без_расширения': 'семейство_шрифта'}
+    """
+    fonts_dir = os.path.join(os.path.dirname(__file__), "..", "resources", "fonts")
+    loaded_fonts = {}
+
+    if not os.path.exists(fonts_dir):
+        print(f"Папка со шрифтами не найдена: {fonts_dir}")
+        return loaded_fonts
+
+    for file in os.listdir(fonts_dir):
+        if file.endswith(('.ttf', '.otf')):
+            font_path = os.path.join(fonts_dir, file)
+            font_id = QFontDatabase.addApplicationFont(font_path)
+
+            if font_id != -1:
+                # Получаем имя семейства (например, "Orbitron Bold")
+                family = QFontDatabase.applicationFontFamilies(font_id)[0]
+                # Берем имя файла без расширения для ключа (например, "Orbitron-Bold")
+                key = os.path.splitext(file)[0]
+                loaded_fonts[key] = family
+                print(f"Загружен шрифт: {file} -> {family}")
+            else:
+                print(f"Ошибка загрузки шрифта: {file}")
+
+    print("Доступные шрифты в базе Qt:", QFontDatabase.families())
+    print(f"Ищу шрифты в папке: {fonts_dir}")
+    for file in os.listdir(fonts_dir):
+        print(f"Найден файл: {file}")
+    return loaded_fonts
+
 
 # =========================================================
 # СЕРВЕР ОФЛАЙН КАРТ (SimpleHTTPRequestHandler)
 # =========================================================
 class TileServer:
-    def __init__(self, tiles_dir="OpenStreetMap", port=8088):
+    def __init__(self, tiles_dir="../resources/OpenStreetMap", port=8088):
         self.tiles_dir = os.path.abspath(tiles_dir)
         self.port = port
         self.server = None
@@ -80,13 +122,14 @@ class SerialThread(QThread):
 class BikeComputerWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        uic.loadUi('KuroCube_BikeComp_UI.ui', self)
-
+        ui_path = os.path.join(SRC_DIR, 'KuroCube_BikeComp_UI.ui')
+        uic.loadUi(ui_path, self)
+        FONTS = load_custom_fonts()
         self.config = configparser.ConfigParser()
-        self.config_file = "config.ini"
+        self.config_file = CONFIG_PATH
 
         # --- 1. ЗАПУСК КАРТЫ И СЕРВЕРА ---
-        tiles_path = os.path.join(os.path.dirname(__file__), "OpenStreetMap")
+        tiles_path = os.path.join(RESOURCES_DIR, "OpenStreetMap")
         self.tile_server = TileServer(tiles_dir=tiles_path, port=8088)
         self.tile_server.start()
         app.setStyle('Fusion')
@@ -107,7 +150,7 @@ class BikeComputerWindow(QMainWindow):
 
             self.f_map.layout().addWidget(self.map_view)
 
-            html_path = os.path.abspath("map_offline.html")
+            html_path = os.path.join(tiles_path, "map_offline.html")
             self.map_view.load(QUrl.fromLocalFile(html_path))
 
         # --- 2. НАСТРОЙКИ И ЯЗЫКИ ---
@@ -125,138 +168,102 @@ class BikeComputerWindow(QMainWindow):
             self.btn_settings.clicked.connect(self.toggle_settings)
         if hasattr(self, 'btn_close_settings'):
             self.btn_close_settings.clicked.connect(self.toggle_settings)
-        self.btn_settings_2.clicked.connect(self.open_keyboard)
+        self.btn_back_main.clicked.connect(self.open_keyboard)
         # --- 3. ПОТОК СЕРИАЛА ---
         self.serial_thread = SerialThread(port='/dev/ttyACM0')  # Проверь имя порта
         self.serial_thread.data_received.connect(self.update_telemetry)
         self.serial_thread.start()
 
-        self.lbl_satellite_icon.setPixmap(
-            self.get_colored_pixmap(
-                os.path.abspath("icons/satellite.svg"),
-                24, 24,  # ширина, высота
-                QColor("#55ff7f")
-            )
-        )
-        self.stat_avg_speed_icon.setPixmap(
-            self.get_colored_pixmap(
-                os.path.abspath("icons/average.svg"),
-                24, 24,  # ширина, высота
-                QColor("#CCCCCC")
-            )
-        )
-        self.stat_max_speed_icon.setPixmap(
-            self.get_colored_pixmap(
-                os.path.abspath("icons/max.svg"),
-                24, 24,  # ширина, высота
-                QColor("#CCCCCC")
-            )
-        )
-        self.stat_climb_icon.setPixmap(
-            self.get_colored_pixmap(
-                os.path.abspath("icons/climb.svg"),
-                24, 24,  # ширина, высота
-                QColor("#CCCCCC")
-            )
-        )
-        self.stat_dist_trip_icon.setPixmap(
-            self.get_colored_pixmap(
-                os.path.abspath("icons/distance_trip.svg"),
-                24, 24,  # ширина, высота
-                QColor("#CCCCCC")
-            )
-        )
-        self.stat_dist_total_icon.setPixmap(
-            self.get_colored_pixmap(
-                os.path.abspath("icons/distance_total.svg"),
-                24, 24,  # ширина, высота
-                QColor("#CCCCCC")
-            )
-        )
-        self.stat_dist_total_icon.setPixmap(
-            self.get_colored_pixmap(
-                os.path.abspath("icons/distance_total.svg"),
-                24, 24,  # ширина, высота
-                QColor("#CCCCCC")
-            )
-        )
-        self.stat_trip_icon.setPixmap(
-            self.get_colored_pixmap(
-                os.path.abspath("icons/time-distance.svg"),
-                24, 24,  # ширина, высота
-                QColor("#CCCCCC")
-            )
-        )
-        self.stat_altitude_icon.setPixmap(
-            self.get_colored_pixmap(
-                os.path.abspath("icons/altitude.svg"),
-                24, 24,  # ширина, высота
-                QColor("#CCCCCC")
-            )
-        )
-        self.stat_pressure_icon.setPixmap(
-            self.get_colored_pixmap(
-                os.path.abspath("icons/pressure.svg"),
-                24, 24,  # ширина, высота
-                QColor("#CCCCCC")
-            )
-        )
-        self.stat_temp_icon.setPixmap(
-            self.get_colored_pixmap(
-                os.path.abspath("icons/temp.svg"),
-                24, 24,  # ширина, высота
-                QColor("#CCCCCC")
-            )
-        )
-        pixmap = self.get_colored_pixmap(
-            os.path.abspath("icons/message.svg"),
-            24, 24,
-            QColor("#CCCCCC")
-        )
-        self.btn_message.setIcon(QIcon(pixmap))
-        self.btn_message.setIconSize(QSize(24, 24))
-        pixmap = self.get_colored_pixmap(
-            os.path.abspath("icons/settings.svg"),
-            48, 48,
-            QColor("#CCCCCC")
-        )
-        self.btn_settings.setIcon(QIcon(pixmap))
-        self.btn_settings.setIconSize(QSize(48, 48))
-        pixmap = self.get_colored_pixmap(
-            os.path.abspath("icons/start.svg"),
-            24, 24,
-            QColor("#CCCCCC")
-        )
-        self.btn_play_pause_track.setIcon(QIcon(pixmap))
-        self.btn_play_pause_track.setIconSize(QSize(24, 24))
-        pixmap = self.get_colored_pixmap(
-            os.path.abspath("icons/stop.svg"),
-            24, 24,
-            QColor("#CCCCCC")
-        )
-        self.btn_stop.setIcon(QIcon(pixmap))
-        self.btn_stop.setIconSize(QSize(24, 24))
-        pixmap = self.get_colored_pixmap(
-            os.path.abspath("icons/player_back.svg"),
-            24, 24,
-            QColor("#CCCCCC")
-        )
-        self.btn_prev.setIcon(QIcon(pixmap))
-        self.btn_prev.setIconSize(QSize(24, 24))
-        pixmap = self.get_colored_pixmap(
-            os.path.abspath("icons/player_play.svg"),
-            24, 24,
-            QColor("#CCCCCC")
-        )
-        self.btn_pause_player.setIcon(QIcon(pixmap))
-        self.btn_pause_player.setIconSize(QSize(24, 24))
-        pixmap = self.get_colored_pixmap(
-            os.path.abspath("icons/player_forward.svg"),
-            24, 24,
-            QColor("#CCCCCC")
-        )
-        self.btn_next.setIcon(QIcon(pixmap))
-        self.btn_next.setIconSize(QSize(24, 24))
+        label_icons = [
+            (self.lbl_satellite_icon, "satellite", 24, 24, "#55ff7f"),
+            (self.stat_avg_speed_icon, "average", 24, 24, "#CCCCCC"),
+            (self.stat_max_speed_icon, "max", 24, 24, "#CCCCCC"),
+            (self.stat_climb_icon, "climb", 24, 24, "#CCCCCC"),
+            (self.stat_dist_trip_icon, "distance_trip", 24, 24, "#CCCCCC"),
+            (self.stat_dist_total_icon, "distance_total", 24, 24, "#CCCCCC"),
+            (self.stat_trip_icon, "time-distance", 24, 24, "#CCCCCC"),
+            (self.stat_altitude_icon, "altitude", 24, 24, "#CCCCCC"),
+            (self.stat_pressure_icon, "pressure", 24, 24, "#CCCCCC"),
+            (self.stat_temp_icon, "temp", 24, 24, "#CCCCCC"),
+        ]
+        for widget, icon_name, w, h, color in label_icons:
+            widget.setPixmap(load_icon(icon_name, w, h, color))
+
+        button_icons = [
+            (self.btn_message, "message", 24, 24, "#CCCCCC"),
+            (self.btn_settings, "settings", 48, 48, "#CCCCCC"),
+            (self.btn_play_pause_track, "start", 24, 24, "#CCCCCC"),
+            (self.btn_stop, "stop", 24, 24, "#CCCCCC"),
+            (self.btn_prev, "player_back", 24, 24, "#CCCCCC"),
+            (self.btn_pause_player, "player_play", 24, 24, "#CCCCCC"),
+            (self.btn_next, "player_forward", 24, 24, "#CCCCCC"),
+            (self.btn_volume_plus, "volume-plus", 36, 36, "#CCCCCC"),
+            (self.btn_volume_minus, "volume-minus", 36, 36, "#CCCCCC"),
+            (self.lst_settings_wifi, "wifi", 36, 36, "#CCCCCC"),
+        ]
+        for widget, icon_name, w, h, color in button_icons:
+            pixmap = load_icon(icon_name, w, h, color)
+            widget.setIcon(QIcon(pixmap))
+            widget.setIconSize(QSize(w, h))
+            # Применяем шрифт только если он успешно загружен
+
+        # Убедитесь, что FONTS загружен и в нем есть ключ "Roboto"
+        if FONTS and "Roboto-Regular" in FONTS:
+            family = FONTS["Roboto-Regular"]  # Получаем имя семейства (например, "Roboto")
+
+            # Список: (Виджет, Размер, Вес/Жирность)
+            font_settings = [
+                # --- Верхняя панель ---
+                (self.lbl_clock, 18, QFont.Weight.Bold),
+                (self.lbl_date, 12, QFont.Weight.Normal),
+                (self.lbl_satellite, 18, QFont.Weight.Normal),
+
+                # --- Скорость ---
+                (self.lbl_speed_text, 18, QFont.Weight.Normal),
+                (self.lbl_speed_value, 100, QFont.Weight.Normal),
+                (self.lbl_speed_unit, 24, QFont.Weight.Bold),
+
+                # --- Статистика: Заголовки (Текст) ---
+                (self.stat_avg_speed_text, 10, QFont.Weight.Normal),
+                (self.stat_max_speed_text, 10, QFont.Weight.Normal),
+                (self.stat_climb_text, 10, QFont.Weight.Normal),
+                (self.stat_dist_trip_text, 10, QFont.Weight.Normal),
+                (self.stat_dist_total_text, 10, QFont.Weight.Normal),
+                (self.stat_pressure_text, 10, QFont.Weight.Normal),
+
+                # --- Статистика: Значения (Цифры) ---
+                (self.stat_avg_speed, 16, QFont.Weight.Bold),
+                (self.stat_max_speed, 16, QFont.Weight.Bold),
+                (self.stat_climb, 16, QFont.Weight.Bold),
+                (self.stat_dist_trip, 16, QFont.Weight.Bold),
+                (self.stat_dist_total, 16, QFont.Weight.Bold),
+                (self.stat_trip_time, 10, QFont.Weight.Bold),
+                (self.stat_altitude, 16, QFont.Weight.Bold),
+                (self.stat_temp, 16, QFont.Weight.Bold),
+
+                # --- Статистика: Единицы измерения ---
+                (self.stat_avg_speed_unit, 16, QFont.Weight.Normal),
+                (self.stat_climb_unit, 16, QFont.Weight.Normal),
+                (self.stat_dist_trip_unit, 16, QFont.Weight.Normal),
+                (self.stat_dist_total_unit, 16, QFont.Weight.Normal),
+                (self.stat_altitude_unit, 16, QFont.Weight.Normal),
+                (self.stat_temp_unit, 16, QFont.Weight.Normal),
+
+                # --- Трек и Музыка ---
+                (self.lbl_track_time, 16, QFont.Weight.Bold),
+                (self.lbl_current_time_music, 16, QFont.Weight.Normal),
+                (self.lbl_music_name, 16, QFont.Weight.Normal),
+                (self.lbl_max_time_music, 16, QFont.Weight.Normal),
+            ]
+
+            # --- Применяем одним циклом ---
+            for widget, size, weight in font_settings:
+                widget.setFont(QFont(family, size, weight))
+
+
+
+
+
     # =========================================================
     # ГРАФИКА И ИКОНКИ (SVG)
     # =========================================================
@@ -295,7 +302,7 @@ class BikeComputerWindow(QMainWindow):
 
     def set_icon(self, widget, svg_name, width=24, height=24, color_hex="#CCCCCC"):
         """Универсальная установка иконок в QLabel и QPushButton"""
-        path = os.path.abspath(os.path.join("icons", svg_name))
+        path = os.path.abspath(os.path.join("../resources/icons", svg_name))
         color = QColor(color_hex)
         pixmap = self.get_colored_pixmap(path, width, height, color)
 
@@ -311,7 +318,7 @@ class BikeComputerWindow(QMainWindow):
 
     def load_language(self, lang_code):
         self.current_lang = lang_code
-        file_path = os.path.join(os.path.dirname(__file__), "locales", f"{lang_code}.json")
+        file_path = os.path.join(os.path.dirname(__file__), "../resources/locales", f"{lang_code}.json")
 
         if not os.path.exists(file_path):
             print(f"Внимание: Файл перевода {file_path} не найден! Использую английский (en).")

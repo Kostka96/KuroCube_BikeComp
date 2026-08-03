@@ -14,4 +14,4 @@ __pycache__/
 
 # Локальные конфиги с личными данными (опционально)
 config.ini
-OpenStreetMap/
+resources/OpenStreetMap/
