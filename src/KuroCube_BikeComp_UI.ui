@@ -544,7 +544,7 @@ border-radius: 20px;</string>
         <string/>
        </property>
       </widget>
-      <widget class="QPushButton" name="btn_stop">
+      <widget class="QPushButton" name="btn_stop_track">
        <property name="geometry">
         <rect>
          <x>390</x>
@@ -2465,19 +2465,19 @@ border-radius: 20px;</string>
        <rect>
         <x>10</x>
         <y>10</y>
-        <width>70</width>
+        <width>100</width>
         <height>30</height>
        </rect>
       </property>
       <property name="minimumSize">
        <size>
-        <width>70</width>
+        <width>100</width>
         <height>30</height>
        </size>
       </property>
       <property name="maximumSize">
        <size>
-        <width>70</width>
+        <width>100</width>
         <height>30</height>
        </size>
       </property>
@@ -5496,7 +5496,7 @@ background-color: rgba(0, 0, 0, 0);</string>
         <string notr="true">color: #CCCCCC;</string>
        </property>
        <property name="text">
-        <string>°c</string>
+        <string>°C</string>
        </property>
        <property name="alignment">
         <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>

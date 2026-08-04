@@ -2,13 +2,14 @@ import os
 import sys
 import json
 import serial
+import math
 import threading
 import configparser
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from datetime import date, datetime
 from PyQt6 import uic
 from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout
-from PyQt6.QtCore import QThread, pyqtSignal, QUrl, Qt, QSize
+from PyQt6.QtCore import QThread, pyqtSignal, QUrl, Qt, QSize, QTimer
 from PyQt6.QtGui import QIcon, QPixmap, QColor, QPainter, QFontDatabase, QFont
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
@@ -85,7 +86,7 @@ class TileServer:
 class SerialThread(QThread):
     data_received = pyqtSignal(dict)
 
-    def __init__(self, port='/dev/ttyACM0', baudrate=115200):
+    def __init__(self, port='COM5', baudrate=115200):
         super().__init__()
         self.port = port
         self.baudrate = baudrate
@@ -93,16 +94,37 @@ class SerialThread(QThread):
 
     def run(self):
         try:
+            # Подключаемся к порту
             ser = serial.Serial(self.port, self.baudrate, timeout=1)
+
+            # ВАЖНО: Активируем линии DTR и RTS для RP2040
+            ser.dtr = True
+            ser.rts = True
+
+            print(f"Успешно подключено к Serial-порту: {self.port} (DTR/RTS set)")
+
             while self.running:
                 if ser.in_waiting > 0:
-                    line = ser.readline().decode('utf-8', errors='ignore').strip()
+                    # Читаем сырую строку
+                    raw_line = ser.readline()
+                    try:
+                        line = raw_line.decode('utf-8', errors='ignore').strip()
+                    except Exception as dec_err:
+                        print(f"Ошибка декодирования: {dec_err}")
+                        continue
+
+                    # Выводим ВСЁ, что пришло в порт для отладки
+                    #if line:
+                        print(f"[RAW SERIAL]: {line}")
+
+                    # Проверяем на JSON
                     if line.startswith('{') and line.endswith('}'):
                         try:
                             data = json.loads(line)
                             self.data_received.emit(data)
-                        except json.JSONDecodeError:
-                            pass
+                        except json.JSONDecodeError as json_err:
+                            print(f"Ошибка парсинга JSON: {json_err}")
+
         except Exception as e:
             print(f"Ошибка чтения Serial ({self.port}): {e}")
 
@@ -128,6 +150,18 @@ class BikeComputerWindow(QMainWindow):
         self.TEMP_OPTIONS = [('celsius', '°C'), ('fahrenheit', '°F')]
         self.TIME_OPTIONS = [('24h', '24-часовой'), ('12h', '12-часовой')]
         self.DATE_OPTIONS = [('DMY', 'ДД.ММ.ГГГГ'), ('MDY', 'ММ/ДД/ГГГГ')]
+        # --- Состояние заезда ---
+        self.is_recording = False  # Запущен ли запись заезда/секундомер
+        self.trip_distance_km = 0.0  # Дистанция текущего заезда (км)
+        self.trip_seconds = 0  # Секунды секундомера
+
+        # --- Таймер для секундомера ---
+        self.track_timer = QTimer(self)
+        self.track_timer.setInterval(1000)  # Раз в 1 секунду
+        self.track_timer.timeout.connect(self.update_track_time)
+
+        # --- Переменные для одометра ---
+        self.last_raw_trip = None  # Чтобы считать дельту с RP2040
         # --- 1. ЗАПУСК КАРТЫ И СЕРВЕРА ---
         tiles_path = os.path.join(RESOURCES_DIR, "OpenStreetMap")
         self.tile_server = TileServer(tiles_dir=tiles_path, port=8088)
@@ -174,7 +208,7 @@ class BikeComputerWindow(QMainWindow):
         if hasattr(self, 'btn_change_lang'):
             self.btn_change_lang.clicked.connect(self.on_lang_clicked)
         # --- 3. ПОТОК СЕРИАЛА ---
-        self.serial_thread = SerialThread(port='/dev/ttyACM0')  # Проверь имя порта
+        self.serial_thread = SerialThread(port='COM5')  # Проверь имя порта
         self.serial_thread.data_received.connect(self.update_telemetry)
         self.serial_thread.start()
 
@@ -197,7 +231,7 @@ class BikeComputerWindow(QMainWindow):
             (self.btn_message, "message", 24, 24, "#CCCCCC"),
             (self.btn_settings, "settings", 48, 48, "#CCCCCC"),
             (self.btn_play_pause_track, "start", 24, 24, "#CCCCCC"),
-            (self.btn_stop, "stop", 24, 24, "#CCCCCC"),
+            (self.btn_stop_track, "stop", 24, 24, "#CCCCCC"),
             (self.btn_prev, "player_back", 24, 24, "#CCCCCC"),
             (self.btn_pause_player, "player_play", 24, 24, "#CCCCCC"),
             (self.btn_next, "player_forward", 24, 24, "#CCCCCC"),
@@ -332,16 +366,20 @@ class BikeComputerWindow(QMainWindow):
             self.current_temp_unit = self.config.get("Settings", "temp_unit", fallback="celsius")
             self.current_time_format = self.config.get("Settings", "time_format", fallback="24h")
             self.current_date_format = self.config.get("Settings", "date_format", fallback="DMY")
+            self.total_distance_km = float(self.config.get("Settings", "total_distance", fallback="0.0"))
         else:
             self.save_settings()
 
     def save_settings(self):
+        if not hasattr(self, 'config'):
+            return
+        self.config["Settings"]["total_distance"] = f"{self.total_distance_km:.2f}"
         self.config["Settings"] = {
             "language": self.current_lang,
             "unit_system": self.current_unit,
             "temp_unit": self.current_temp_unit,
             "time_format": getattr(self, 'current_time_format', '24h'),
-            "date_format": getattr(self, 'current_date_format', 'DMY')
+            "date_format": getattr(self, 'current_date_format', 'DMY'),
         }
         with open(self.config_file, "w", encoding="utf-8") as f:
             self.config.write(f)
@@ -366,7 +404,11 @@ class BikeComputerWindow(QMainWindow):
         if hasattr(self, 'stat_dist_total_text'):
             self.stat_dist_total_text.setText(self.translations.get("total_distance", "Total distance"))
         if hasattr(self, 'stat_trip_time'):
-            self.stat_trip_time.setText(self.translations.get("trip_time", "Trip time"))
+            self.stat_trip_time.setText(self.translations.get("trip_time", "Time move"))
+        if hasattr(self, 'stat_temp_unit'):
+            temp_key = "temp_unit_imperial" if self.current_temp_unit == "fahrenheit" else "temp_unit_metric"
+            self.stat_temp_unit.setText(self.translations.get(temp_key, "°C"))
+
         # --- ПЛИТКА 1: ЯЗЫК ---
         if hasattr(self, 'lbl_change_lang'):
             self.lbl_change_lang.setText(self.translations.get("language", "Language"))
@@ -574,14 +616,80 @@ class BikeComputerWindow(QMainWindow):
 
         if hasattr(self, 'btn_change_unit_data'):
             self.btn_change_unit_data.clicked.connect(self.on_date_format_clicked)
+
+    def setup_track_buttons(self):
+        if hasattr(self, 'btn_play_pause_track'):
+            self.btn_play_pause_track.clicked.connect(self.toggle_recording)
+        if hasattr(self, 'btn_stop_track'):
+            self.btn_stop_track.clicked.connect(self.stop_recording)
+
+    def toggle_recording(self):
+        """Старт / Пауза заезда"""
+        self.is_recording = not self.is_recording
+
+        if self.is_recording:
+            # Запуск/Возобновление
+            self.track_timer.start()
+            print("Заезд запущен (Старт / Запись GPS / Секундомер)")
+            # Сюда позже добавим смену иконки кнопки на "Pause"
+        else:
+            # Пауза
+            self.track_timer.stop()
+            print("Заезд поставлен на паузу")
+            # Сюда позже добавим смену иконки кнопки на "Play"
+
+    def stop_recording(self):
+        """Остановка и финализация заезда"""
+        if self.is_recording or self.trip_seconds > 0 or self.trip_distance_km > 0:
+            self.is_recording = False
+            self.track_timer.stop()
+
+            print(f"Заезд завершен! Время: {self.lbl_track_time.text()}, Дистанция: {self.trip_distance_km:.2f} км")
+
+            # TODO: Позже здесь сформируем файл трека (.gpx или .json) из даты и времени
+
+            # Сброс локального счетчика заезда
+            self.trip_distance_km = 0.0
+            self.trip_seconds = 0
+            self.last_raw_trip = None
+
+            # Обновляем интерфейс
+            if hasattr(self, 'lbl_track_time'):
+                self.lbl_track_time.setText("00:00:00")
+            if hasattr(self, 'stat_dist_trip'):
+                self.stat_dist_trip.setText("0.0")
+
+    def update_track_time(self):
+        """Тикает раз в секунду при активном заезде"""
+        self.trip_seconds += 1
+
+        # Форматируем секунды в HH:MM:SS
+        hours = self.trip_seconds // 3600
+        minutes = (self.trip_seconds % 3600) // 60
+        seconds = self.trip_seconds % 60
+
+        time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+        if hasattr(self, 'lbl_track_time'):
+            self.lbl_track_time.setText(time_str)
+
+    def get_gps_signal_color(self, sats, hdop=None):
+        """
+        Возвращает HEX-цвет в зависимости от качества сигнала GPS.
+        """
+        if sats >= 8 and (hdop is None or hdop <= 2.0):
+            return "#55ff7f"  # Отличный фикс (Твой зеленый)
+        elif 4 <= sats < 8:
+            return "#ffaa00"  # Средняя точность (Оранжевый / Желтый)
+        else:
+            return "#ff5555"  # Поиски / Слабый сигнал (Красный)
     # =========================================================
     # ОБРАБОТКА ДАННЫХ C RP2040
     # =========================================================
-
     def update_telemetry(self, data):
         # 1. Время и Дата из JSON
-        if 'time' in data and hasattr(self, 'lbl_time'):
-            self.lbl_time.setText(data['time'])
+        if 'time' in data and hasattr(self, 'lbl_clock'):
+            self.lbl_clock.setText(data['time'])
 
         if 'date' in data and data['date'] != "N/A":
             try:
@@ -593,40 +701,102 @@ class BikeComputerWindow(QMainWindow):
             except ValueError:
                 pass
 
-        # 2. Скорость и Дистанция (Датчик Холла)
+        # 2. GPS: Спутники + Динамическая подсветка точности
+        if 'gps' in data:
+            sats = data['gps'].get('sats', 0)
+            hdop = data['gps'].get('hdop', 99.0)
+
+            # Вычисляем цвет
+            color_hex = self.get_gps_signal_color(sats, hdop)
+
+            # Обновляем число спутников и его цвет
+            if hasattr(self, 'lbl_satellite'):
+                self.lbl_satellite.setText(str(sats))
+                self.lbl_satellite.setStyleSheet(f"color: {color_hex};")
+
+            # Обновляем цвет иконки
+            if hasattr(self, 'lbl_satellite_icon'):
+                #self.lbl_satellite_icon.setStyleSheet(f"color: {color_hex};")
+                label_icons = [
+                    (self.lbl_satellite_icon, "satellite", 24, 24, f"{color_hex}")
+                ]
+                for widget, icon_name, w, h, color in label_icons:
+                    widget.setPixmap(load_icon(icon_name, w, h, color))
+            # Если есть координаты — двигаем маркер на карте
+            if 'lat' in data['gps'] and 'lon' in data['gps']:
+                lat = data['gps']['lat']
+                lon = data['gps']['lon']
+                if hasattr(self, 'map_view'):
+                    self.map_view.page().runJavaScript(f"updatePosition({lat}, {lon});")
+
+        # 3. Скорость и Пробег (Датчик Холла)
         if 'wheel' in data:
-            raw_speed = data['wheel']['speed']
+            raw_speed = data['wheel'].get('speed', 0)
             converted_speed = self.convert_speed(raw_speed)
-            if hasattr(self, 'lbl_speed_val'):
-                self.lbl_speed_val.setText(f"{converted_speed:.1f}")
 
-            if 'trip' in data['wheel'] and hasattr(self, 'lbl_trip_val'):
-                trip_dist = self.convert_distance(data['wheel']['trip'])
-                self.lbl_trip_val.setText(f"{trip_dist:.1f}")
+            # Текущая скорость показывается всегда
+            if hasattr(self, 'lbl_speed_value'):
+                self.lbl_speed_value.setText(f"{converted_speed:.1f}")
 
-            if 'odo' in data['wheel'] and hasattr(self, 'lbl_odo_val'):
-                total_dist = self.convert_distance(data['wheel']['odo'])
-                self.lbl_odo_val.setText(f"{int(total_dist)}")
+            # Обработка дистанции из пакета RP2040
+            if 'trip' in data['wheel']:
+                current_raw_trip = data['wheel']['trip']
 
-        # 3. Барометр и Климат (BMP280)
-        if 'bmp' in data:
-            if 'temp' in data['bmp'] and hasattr(self, 'lbl_temp_val'):
-                temp = self.convert_temperature(data['bmp']['temp'])
-                self.lbl_temp_val.setText(f"{temp:.1f}")
+                # Инициализируем стартовое значение
+                if self.last_raw_trip is None:
+                    self.last_raw_trip = current_raw_trip
 
-            if 'alt' in data['bmp'] and hasattr(self, 'lbl_alt_val'):
-                alt = self.convert_altitude(data['bmp']['alt'])
-                self.lbl_alt_val.setText(f"{int(alt)}")
+                # Вычисляем прирост дистанции между пакетами
+                delta = current_raw_trip - self.last_raw_trip
+                self.last_raw_trip = current_raw_trip
 
-            if 'press' in data['bmp'] and hasattr(self, 'lbl_press_val'):
-                self.lbl_press_val.setText(f"{int(data['bmp']['press'])}")
+                if delta > 0:
+                    # 1. ОБЩИЙ ПРОБЕГ (ODO): Растет ВСЕГДА при движении колеса
+                    self.total_distance_km += delta
+                    self.save_settings()  # Сохраняем свежий одометр в config.ini
 
-        # 4. Координаты GPS -> Обновление маркера на карте
-        if 'gps' in data and 'lat' in data['gps'] and 'lon' in data['gps']:
-            lat = data['gps']['lat']
-            lon = data['gps']['lon']
-            if hasattr(self, 'map_view'):
-                self.map_view.page().runJavaScript(f"updatePosition({lat}, {lon});")
+                    # 2. ПРОБЕГ ЗА ПОЕЗДКУ (Trip): Растет ТОЛЬКО при записи заезда
+                    if self.is_recording:
+                        self.trip_distance_km += delta
+
+                # Выводим Trip (Пробег текущей записи)
+                if hasattr(self, 'stat_dist_trip'):
+                    trip_dist = self.convert_distance(self.trip_distance_km)
+                    self.stat_dist_trip.setText(f"{trip_dist:.1f}")
+
+                # Выводим ODO (Общий одометр из config.ini)
+                if hasattr(self, 'stat_dist_total'):
+                    total_dist = self.convert_distance(self.total_distance_km)
+                    self.stat_dist_total.setText(f"{total_dist:.1f}")
+
+            # 4. Барометр и Высота (BMP280) — высота всегда в метрах
+            if 'bmp' in data:
+                if 'temp' in data['bmp'] and hasattr(self, 'stat_temp'):
+                    temp = self.convert_temperature(data['bmp']['temp'])
+                    self.stat_temp.setText(f"{temp:.1f}")
+
+                if 'alt' in data['bmp'] and hasattr(self, 'stat_altitude'):
+                    raw_alt_m = data['bmp']['alt']
+                    self.stat_altitude.setText(f"{int(raw_alt_m)}")
+
+                if 'press' in data['bmp'] and hasattr(self, 'lbl_press_val'):
+                    self.lbl_press_val.setText(f"{int(data['bmp']['press'])}")
+
+        # 5. Акселерометр (Расчет Уклона / Climb %)
+        if 'imu' in data:
+            ax = data['imu'].get('ax', 0)
+            ay = data['imu'].get('ay', 0)
+            az = data['imu'].get('az', 9.8)
+
+            # Расчет тангажа (Pitch angle в градусах)
+            pitch_rad = math.atan2(ax, math.sqrt(ay ** 2 + az ** 2))
+            pitch_deg = math.degrees(pitch_rad)
+
+            # Перевод в процент уклона (Grade %)
+            incline_percent = math.tan(pitch_rad) * 100
+
+            if hasattr(self, 'stat_climb'):
+                self.stat_climb.setText(f"{incline_percent:.1f}")
 
     def closeEvent(self, event):
         self.serial_thread.stop()
