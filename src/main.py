@@ -123,6 +123,11 @@ class BikeComputerWindow(QMainWindow):
         self.config = configparser.ConfigParser()
         self.config_file = CONFIG_PATH
         self.stackedWidget.setCurrentIndex(0)
+        self.LANG_OPTIONS = [('ru', 'Русский'), ('en', 'English')]
+        self.SPEED_OPTIONS = [('metric', 'Км/ч'), ('imperial', 'Мили/ч')]
+        self.TEMP_OPTIONS = [('celsius', '°C'), ('fahrenheit', '°F')]
+        self.TIME_OPTIONS = [('24h', '24-часовой'), ('12h', '12-часовой')]
+        self.DATE_OPTIONS = [('DMY', 'ДД.ММ.ГГГГ'), ('MDY', 'ММ/ДД/ГГГГ')]
         # --- 1. ЗАПУСК КАРТЫ И СЕРВЕРА ---
         tiles_path = os.path.join(RESOURCES_DIR, "OpenStreetMap")
         self.tile_server = TileServer(tiles_dir=tiles_path, port=8088)
@@ -155,17 +160,19 @@ class BikeComputerWindow(QMainWindow):
         self.current_temp_unit = "celsius"
 
         self.load_settings()
+        self.setup_settings_signals()
         if hasattr(self, 'frame_settings'):
             self.frame_settings.hide()
         self.load_language(self.current_lang)
 
         if hasattr(self, 'btn_settings'):
-            self.btn_settings.clicked.connect(self.toggle_settings)
+            self.btn_settings.clicked.connect(lambda: self.stackedWidget.setCurrentIndex(1))
         if hasattr(self, 'btn_close_settings'):
-            self.btn_close_settings.clicked.connect(self.toggle_settings)
+            self.btn_close_settings.clicked.connect(lambda: self.stackedWidget.setCurrentIndex(0))
 
         self.btn_back_to_main.clicked.connect(lambda: self.stackedWidget.setCurrentIndex(0))
-
+        if hasattr(self, 'btn_change_lang'):
+            self.btn_change_lang.clicked.connect(self.on_lang_clicked)
         # --- 3. ПОТОК СЕРИАЛА ---
         self.serial_thread = SerialThread(port='/dev/ttyACM0')  # Проверь имя порта
         self.serial_thread.data_received.connect(self.update_telemetry)
@@ -294,39 +301,6 @@ class BikeComputerWindow(QMainWindow):
             # Здесь вы можете записать этот текст в нужное место (например, в name маршрута)
             # self.lbl_route_name.setText(entered_text)
 
-    def get_colored_pixmap(self, svg_path, width, height, color):
-        if not os.path.exists(svg_path):
-            return QPixmap()
-
-        original_pixmap = QPixmap(svg_path)
-        pixmap = original_pixmap.scaled(width, height,
-                                        Qt.AspectRatioMode.KeepAspectRatio,
-                                        Qt.TransformationMode.SmoothTransformation)
-
-        colored_pixmap = QPixmap(width, height)
-        colored_pixmap.fill(Qt.GlobalColor.transparent)
-
-        painter = QPainter(colored_pixmap)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-        painter.drawPixmap(0, 0, pixmap)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-        painter.fillRect(colored_pixmap.rect(), color)
-        painter.end()
-
-        return colored_pixmap
-
-    def set_icon(self, widget, svg_name, width=24, height=24, color_hex="#CCCCCC"):
-        """Универсальная установка иконок в QLabel и QPushButton"""
-        path = os.path.abspath(os.path.join("../resources/icons", svg_name))
-        color = QColor(color_hex)
-        pixmap = self.get_colored_pixmap(path, width, height, color)
-
-        if hasattr(widget, 'setPixmap'):
-            widget.setPixmap(pixmap)
-        elif hasattr(widget, 'setIcon'):
-            widget.setIcon(QIcon(pixmap))
-            widget.setIconSize(QSize(width, height))
-
     # =========================================================
     # МЕТОДЫ НАСТРОЕК И ПЕРЕВОДА
     # =========================================================
@@ -356,8 +330,8 @@ class BikeComputerWindow(QMainWindow):
             self.current_lang = self.config.get("Settings", "language", fallback="en")
             self.current_unit = self.config.get("Settings", "unit_system", fallback="metric")
             self.current_temp_unit = self.config.get("Settings", "temp_unit", fallback="celsius")
-            print(
-                f"Загружено: Язык={self.current_lang}, Система={self.current_unit}, Температура={self.current_temp_unit}")
+            self.current_time_format = self.config.get("Settings", "time_format", fallback="24h")
+            self.current_date_format = self.config.get("Settings", "date_format", fallback="DMY")
         else:
             self.save_settings()
 
@@ -365,9 +339,11 @@ class BikeComputerWindow(QMainWindow):
         self.config["Settings"] = {
             "language": self.current_lang,
             "unit_system": self.current_unit,
-            "temp_unit": self.current_temp_unit
+            "temp_unit": self.current_temp_unit,
+            "time_format": getattr(self, 'current_time_format', '24h'),
+            "date_format": getattr(self, 'current_date_format', 'DMY')
         }
-        with open(self.config_file, "w") as f:
+        with open(self.config_file, "w", encoding="utf-8") as f:
             self.config.write(f)
 
     def set_unit_system(self, unit_system):
@@ -391,6 +367,49 @@ class BikeComputerWindow(QMainWindow):
             self.stat_dist_total_text.setText(self.translations.get("total_distance", "Total distance"))
         if hasattr(self, 'stat_trip_time'):
             self.stat_trip_time.setText(self.translations.get("trip_time", "Trip time"))
+        # --- ПЛИТКА 1: ЯЗЫК ---
+        if hasattr(self, 'lbl_change_lang'):
+            self.lbl_change_lang.setText(self.translations.get("language", "Language"))
+        if hasattr(self, 'btn_change_lang'):
+            self.btn_change_lang.setText(self.translations.get("meta_language_name", "English"))
+
+        # --- ПЛИТКА 2: СКОРОСТЬ ---
+        if hasattr(self, 'lbl_change_unit_speed'):
+            self.lbl_change_unit_speed.setText(self.translations.get("speed_text", "Speed"))
+        if hasattr(self, 'btn_change_unit_speed'):
+            speed_key = "speed_unit_imperial" if self.current_unit == "imperial" else "speed_unit_metric"
+            self.btn_change_unit_speed.setText(self.translations.get(speed_key, "Km/H"))
+
+        # --- ПЛИТКА 3: РАССТОЯНИЕ ---
+        if hasattr(self, 'lbl_change_unit_distance'):
+            self.lbl_change_unit_distance.setText(self.translations.get("distance", "Distance"))
+        if hasattr(self, 'btn_change_unit_distance'):
+            dist_key = "distance_unit_imperial" if self.current_unit == "imperial" else "distance_unit_metric"
+            self.btn_change_unit_distance.setText(self.translations.get(dist_key, "Km"))
+
+        # --- ПЛИТКА 4: ТЕМПЕРАТУРА ---
+        if hasattr(self, 'lbl_change_unit_temp'):
+            self.lbl_change_unit_temp.setText(self.translations.get("temperature", "Temperature"))
+        if hasattr(self, 'btn_change_unit_temp'):
+            temp_key = "temp_unit_imperial" if self.current_temp_unit == "fahrenheit" else "temp_unit_metric"
+            self.btn_change_unit_temp.setText(self.translations.get(temp_key, "°C"))
+
+        # --- ПЛИТКА 5: ВРЕМЯ (24H / 12H) ---
+        if hasattr(self, 'lbl_change_unit_time'):
+            self.lbl_change_unit_time.setText(self.translations.get("time", "Time"))
+        if hasattr(self, 'btn_change_unit_time'):
+            time_key = "time_format_12" if getattr(self, 'current_time_format',
+                                                   '24h') == '12h' else "time_format_24"
+            self.btn_change_unit_time.setText(self.translations.get(time_key, "24H"))
+
+        # --- ПЛИТКА 6: ДАТА ---
+        if hasattr(self, 'lbl_change_unit_data'):
+            # Иправлено: берем "date" вместо "distance"
+            self.lbl_change_unit_data.setText(self.translations.get("date", "Date"))
+        if hasattr(self, 'btn_change_unit_data'):
+            date_key = "date_format_MM.DD.YYYY" if getattr(self, 'current_date_format',
+                                                           'DMY') == 'MDY' else "date_format_DD.MM.YYYY"
+            self.btn_change_unit_data.setText(self.translations.get(date_key, "DD.MM.YYYY"))
 
         self.apply_unit_system()
 
@@ -451,6 +470,110 @@ class BikeComputerWindow(QMainWindow):
     def convert_temperature(self, temp_c):
         return (temp_c * 9 / 5) + 32 if self.current_temp_unit == "fahrenheit" else temp_c
 
+    def get_available_languages(self):
+        """
+        Сканирует папку resources/locales и возвращает список кортежей:
+        [('en', 'English'), ('ru', 'Русский'), ...]
+        """
+        locales_dir = os.path.join(BASE_DIR, "resources", "locales")
+        languages = []
+
+        if os.path.exists(locales_dir):
+            for file in sorted(os.listdir(locales_dir)):
+                if file.endswith('.json'):
+                    lang_code = os.path.splitext(file)[0]  # Получаем 'en', 'ru' и т.д.
+                    file_path = os.path.join(locales_dir, file)
+
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                            # Берем мета-имя из файла или код языка как фоллбэк
+                            lang_name = data.get("meta_language_name", lang_code.upper())
+                            languages.append((lang_code, lang_name))
+                    except Exception as e:
+                        print(f"Ошибка чтения файла перевода {file}: {e}")
+
+        # Если папка пуста или файлы не найдены
+        if not languages:
+            languages = [("en", "English")]
+
+        return languages
+
+    def on_lang_clicked(self):
+        """Переключает язык на следующий из доступных по кругу."""
+        available_langs = self.get_available_languages()
+
+        # Извлекаем список кодов ['en', 'ru', ...]
+        lang_codes = [lang[0] for lang in available_langs]
+
+        # Находим индекс текущего языка
+        try:
+            current_index = lang_codes.index(self.current_lang)
+            next_index = (current_index + 1) % len(lang_codes)
+        except ValueError:
+            next_index = 0
+
+        # Берем новый код языка
+        next_lang_code = lang_codes[next_index]
+
+        # Загружаем новый язык (этот метод у тебя уже есть, он сам вызовет apply_translations и save_settings)
+        self.load_language(next_lang_code)
+
+    # --- 1. СКОРОСТЬ (Км/ч <-> Mi/H) ---
+    def on_speed_unit_clicked(self):
+        """Переключает систему измерения скорости."""
+        self.current_unit = "imperial" if self.current_unit == "metric" else "metric"
+        self.apply_translations()
+        self.save_settings()
+
+    # --- 2. РАССТОЯНИЕ (Км <-> Mi) ---
+    def on_distance_unit_clicked(self):
+        """Связано с общей системой единиц (metric / imperial)."""
+        # Обычно расстояние и скорость переключаются вместе,
+        # но если нужно менять только систему единиц — дергаем ту же логику
+        self.current_unit = "imperial" if self.current_unit == "metric" else "metric"
+        self.apply_translations()
+        self.save_settings()
+
+    # --- 3. ТЕМПЕРАТУРА (°C <-> °F) ---
+    def on_temp_unit_clicked(self):
+        """Переключает шкалу температуры."""
+        self.current_temp_unit = "fahrenheit" if self.current_temp_unit == "celsius" else "celsius"
+        self.apply_translations()
+        self.save_settings()
+
+    # --- 4. ВРЕМЯ (24H <-> 12H) ---
+    def on_time_format_clicked(self):
+        """Переключает формат времени."""
+        current_fmt = getattr(self, 'current_time_format', '24h')
+        self.current_time_format = "12h" if current_fmt == "24h" else "24h"
+        self.apply_translations()
+        self.save_settings()
+
+    # --- 5. ДАТА (DD.MM.YYYY <-> MM.DD.YYYY) ---
+    def on_date_format_clicked(self):
+        """Переключает формат отображения даты."""
+        current_fmt = getattr(self, 'current_date_format', 'DMY')
+        self.current_date_format = "MDY" if current_fmt == "DMY" else "DMY"
+        self.apply_translations()
+        self.save_settings()
+
+    def setup_settings_signals(self):
+        """Подключение всех кнопок плиток к их обработчикам."""
+        if hasattr(self, 'btn_change_unit_speed'):
+            self.btn_change_unit_speed.clicked.connect(self.on_speed_unit_clicked)
+
+        if hasattr(self, 'btn_change_unit_distance'):
+            self.btn_change_unit_distance.clicked.connect(self.on_distance_unit_clicked)
+
+        if hasattr(self, 'btn_change_unit_temp'):
+            self.btn_change_unit_temp.clicked.connect(self.on_temp_unit_clicked)
+
+        if hasattr(self, 'btn_change_unit_time'):
+            self.btn_change_unit_time.clicked.connect(self.on_time_format_clicked)
+
+        if hasattr(self, 'btn_change_unit_data'):
+            self.btn_change_unit_data.clicked.connect(self.on_date_format_clicked)
     # =========================================================
     # ОБРАБОТКА ДАННЫХ C RP2040
     # =========================================================

@@ -66,7 +66,7 @@
      <enum>Qt::LeftToRight</enum>
     </property>
     <property name="currentIndex">
-     <number>1</number>
+     <number>0</number>
     </property>
     <widget class="QWidget" name="page_main">
      <widget class="QFrame" name="f_track">
@@ -9624,6 +9624,8 @@ background-color: rgba(255, 255, 255, 0);</string>
           <string>Русский</string>
          </property>
         </widget>
+        <zorder>btn_change_lang</zorder>
+        <zorder>lbl_change_lang</zorder>
        </widget>
        <widget class="QFrame" name="f_change_unit_speed">
         <property name="geometry">
