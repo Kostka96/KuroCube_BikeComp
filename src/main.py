@@ -121,7 +121,7 @@ def find_rp2040_port():
             print(f"[SERIAL] Найден резервный порт Linux: {port.device}")
             return port.device
 
-    print("[SERIAL ERROR] Устройство RP2040 не найдено!")
+    #print("[SERIAL ERROR] Устройство RP2040 не найдено!")
     return None
 
 

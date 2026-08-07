@@ -271,16 +271,19 @@ class AncsClient:
         log.info("Pairing agent registered (Just Works)")
 
     def register_advertisement(self, adapter_path):
-        ad = Advertisement(self.bus, 0)
-        ad_manager = dbus.Interface(
-            self.bus.get_object(BLUEZ_SERVICE_NAME, adapter_path),
-            LE_ADVERTISING_MANAGER_IFACE,
-        )
-        ad_manager.RegisterAdvertisement(
-            ad.path, {},
-            reply_handler=lambda: log.info("Advertising started as '%s'", DEVICE_NAME),
-            error_handler=lambda e: log.error("Failed to start advertising: %s", e),
-        )
+        try:
+            ad = Advertisement(self.bus, 0)
+            ad_manager = dbus.Interface(
+                self.bus.get_object(BLUEZ_SERVICE_NAME, adapter_path),
+                LE_ADVERTISING_MANAGER_IFACE,
+            )
+            ad_manager.RegisterAdvertisement(
+                ad.path, {},
+                reply_handler=lambda: log.info("Advertising started as '%s'", DEVICE_NAME),
+                error_handler=lambda e: log.warning("Advertising не запущен (устройство уже подключено): %s", e),
+            )
+        except Exception as e:
+            log.warning("Не удалось зарегистрировать Advertisement: %s", e)
 
     def start(self):
         adapter_path = self.setup_adapter()
@@ -414,9 +417,13 @@ class AncsClient:
         self._data_buffer += data
         buf = self._data_buffer
         if len(buf) < 5:
-            return  # ждём остальные фрагменты
+            return
         command_id, uid = struct.unpack("<BI", buf[:5])
         if command_id != COMMAND_GET_NOTIFICATION_ATTRIBUTES:
+            return
+
+        # Если сообщение с этим UID уже обработано, пропускаем
+        if getattr(self, "_last_processed_uid", None) == uid:
             return
 
         offset = 5
@@ -426,7 +433,7 @@ class AncsClient:
             length = struct.unpack("<H", buf[offset + 1: offset + 3])[0]
             value_end = offset + 3 + length
             if value_end > len(buf):
-                return  # значение ещё не докачалось целиком, ждём следующий фрагмент
+                return  # ждем фрагменты
             value = bytes(buf[offset + 3: value_end]).decode("utf-8", errors="replace")
             attrs[attr_id] = value
             offset = value_end
@@ -436,8 +443,11 @@ class AncsClient:
         message = attrs.get(ATTR_MESSAGE, "")
         category = getattr(self, "_pending_category", "Other")
 
-        on_notification(app_id, title, message, category)
+        # Запоминаем обработанный UID и очищаем буфер
+        self._last_processed_uid = uid
         self._data_buffer = bytearray()
+
+        on_notification(app_id, title, message, category)
 
     # -- AMS: подписка на Now Playing и парсинг обновлений -------------
 
