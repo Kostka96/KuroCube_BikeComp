@@ -16,7 +16,9 @@ from PyQt6.QtGui import QIcon, QFontDatabase, QFont
 from T9Dialog import T9Dialog
 from ui_utils import load_icon
 from offline_map import OfflineMapWidget
-
+from NotificationBanner import NotificationBanner
+from BluetoothThread import BluetoothThread
+import serial.tools.list_ports
 # --- ГЛОБАЛЬНЫЕ ПУТИ ---
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.abspath(os.path.join(SRC_DIR, ".."))
@@ -80,40 +82,91 @@ class TileServer:
 # =========================================================
 # ФОНОВЫЙ ПОТОК ЧТЕНИЯ SERIAL / JSON
 # =========================================================
+def find_rp2040_port():
+    """
+    Автоматически ищет подключенный RP2040 (Raspberry Pi Pico) на Windows и Linux/Raspberry Pi.
+    """
+    # Расширенный список VID:PID для RP2040 (включая 2E8A:0003)
+    RP2040_VID_PIDS = [
+        (0x2E8A, 0x0003),  # Standard Pico CDC Serial
+        (0x2E8A, 0x0005),  # Pico Bootloader/Serial
+        (0x2E8A, 0x000A),  # RP2040 Dual Serial
+        (0x2341, 0x005E),  # Arduino Nano RP2040
+    ]
+
+    ports = list(serial.tools.list_ports.comports())
+
+    for port in ports:
+        # 1. Точная проверка по VID и PID
+        if (port.vid, port.pid) in RP2040_VID_PIDS:
+            print(f"[SERIAL] Найден RP2040 по VID/PID ({port.vid:04X}:{port.pid:04X}): {port.device}")
+            return port.device
+
+        # 2. Проверка HWID строки на тот случай, если VID/PID не распарсились автоматически
+        hwid = (port.hwid or "").upper()
+        if "2E8A:0003" in hwid or "2E8A:" in hwid:
+            print(f"[SERIAL] Найден RP2040 по HWID: {port.device}")
+            return port.device
+
+        # 3. Проверка по описанию устройства
+        desc = (port.description or "").lower()
+        manufacturer = (port.manufacturer or "").lower()
+        if "rp2040" in desc or "pico" in desc or "rp2040" in manufacturer:
+            print(f"[SERIAL] Найден RP2040 по описанию: {port.device}")
+            return port.device
+
+    # 4.Резервный вариант для Linux / Raspberry Pi OS
+    for port in ports:
+        if "ttyACM" in port.device or "ttyUSB" in port.device:
+            print(f"[SERIAL] Найден резервный порт Linux: {port.device}")
+            return port.device
+
+    print("[SERIAL ERROR] Устройство RP2040 не найдено!")
+    return None
+
+
 class SerialThread(QThread):
     data_received = pyqtSignal(dict)
 
-    def __init__(self, port='COM5', baudrate=115200):
+    def __init__(self, baudrate=115200):
         super().__init__()
-        self.port = port
         self.baudrate = baudrate
         self.running = True
 
     def run(self):
-        try:
-            ser = serial.Serial(self.port, self.baudrate, timeout=1)
-            ser.dtr = True
-            ser.rts = True
-            print(f"Успешно подключено к Serial-порту: {self.port} (DTR/RTS set)")
+        while self.running:
+            port_name = find_rp2040_port()
 
-            while self.running:
-                if ser.in_waiting > 0:
-                    raw_line = ser.readline()
-                    try:
-                        line = raw_line.decode('utf-8', errors='ignore').strip()
-                    except Exception as dec_err:
-                        print(f"Ошибка декодирования: {dec_err}")
-                        continue
+            if not port_name:
+                self.msleep(2000)
+                continue
 
-                    if line.startswith('{') and line.endswith('}'):
+            try:
+                ser = serial.Serial(port_name, self.baudrate, timeout=1)
+                ser.dtr = True
+                ser.rts = True
+                print(f"[SERIAL] Подключено к {port_name}")
+
+                while self.running:
+                    if ser.in_waiting > 0:
+                        raw_line = ser.readline()
                         try:
-                            data = json.loads(line)
-                            self.data_received.emit(data)
-                        except json.JSONDecodeError as json_err:
-                            print(f"Ошибка парсинга JSON: {json_err}")
+                            line = raw_line.decode('utf-8', errors='ignore').strip()
+                        except Exception:
+                            continue
 
-        except Exception as e:
-            print(f"Ошибка чтения Serial ({self.port}): {e}")
+                        if line.startswith('{') and line.endswith('}'):
+                            try:
+                                data = json.loads(line)
+                                self.data_received.emit(data)
+                            except json.JSONDecodeError:
+                                pass
+                    else:
+                        self.msleep(10)
+
+            except (serial.SerialException, OSError) as e:
+                print(f"[SERIAL ERROR] Потеря связи с {port_name}: {e}")
+                self.msleep(2000)
 
     def stop(self):
         self.running = False
@@ -130,6 +183,18 @@ class BikeComputerWindow(QMainWindow):
         uic.loadUi(ui_path, self)
         #self.showFullScreen()
         #self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+
+        self.unread_count = 0
+        self.notifications_history = []
+        # 1. Создаем виджет всплывающего уведомления
+        self.banner = NotificationBanner(self)
+
+        # 2. Запускаем Bluetooth Поток
+        self.bt_thread = BluetoothThread()
+        self.bt_thread.notification_received.connect(self.handle_new_notification)
+        self.bt_thread.now_playing_changed.connect(self.update_media_widget)
+        self.bt_thread.start()
+        self.setup_bluetooth_ui()
 
         FONTS = load_custom_fonts()
         self.config_file = CONFIG_PATH
@@ -180,15 +245,25 @@ class BikeComputerWindow(QMainWindow):
             self.btn_back_to_main.clicked.connect(lambda: self.stackedWidget.setCurrentIndex(0))
         if hasattr(self, 'btn_change_lang'):
             self.btn_change_lang.clicked.connect(self.on_lang_clicked)
+        if hasattr(self, 'btn_settings_to_ui'):
+            self.btn_settings_to_ui.clicked.connect(lambda: self.stackedWidget_2.setCurrentIndex(0))
+        if hasattr(self, 'btn_settings_to_wifi'):
+            self.btn_settings_to_wifi.clicked.connect(lambda: self.stackedWidget_2.setCurrentIndex(1))
 
         self.setup_track_buttons()
-
+        button_icons = [
+            (self.btn_play_pause_track, "pause", 24, 24, "#CCCCCC")]
+        for widget, icon_name, w, h, color in button_icons:
+            if hasattr(self, widget.objectName()):
+                pixmap = load_icon(icon_name, w, h, color)
+                widget.setIcon(QIcon(pixmap))
+                widget.setIconSize(QSize(w, h))
         self.btn_map_zoom_plus.clicked.connect(self.map_widget.zoom_in)
         self.btn_map_zoom_minus.clicked.connect(self.map_widget.zoom_out)
         self.btn_map_to_me.clicked.connect(self.map_widget.center_on_gps)
 
         # --- 3. ПОТОК СЕРИАЛА ---
-        self.serial_thread = SerialThread(port='COM5')
+        self.serial_thread = SerialThread()
         self.serial_thread.data_received.connect(self.update_telemetry)
         self.serial_thread.start()
 
@@ -214,6 +289,9 @@ class BikeComputerWindow(QMainWindow):
             (self.btn_settings, "settings", 48, 48, "#CCCCCC"),
             (self.btn_play_pause_track, "start", 24, 24, "#CCCCCC"),
             (self.btn_stop_track, "stop", 24, 24, "#CCCCCC"),
+            (self.btn_map_zoom_plus, "plus", 24, 24, "#CCCCCC"),
+            (self.btn_map_zoom_minus, "minus", 24, 24, "#CCCCCC"),
+            (self.btn_map_to_me, "metka_gps", 24, 24, "#CCCCCC"),
             (self.btn_prev, "player_back", 24, 24, "#CCCCCC"),
             (self.btn_pause_player, "player_play", 24, 24, "#CCCCCC"),
             (self.btn_next, "player_forward", 24, 24, "#CCCCCC"),
@@ -280,6 +358,89 @@ class BikeComputerWindow(QMainWindow):
             for widget, size, weight in font_settings:
                 if hasattr(self, widget.objectName()):
                     widget.setFont(QFont(family, size, weight))
+
+    def handle_new_notification(self, app_id, title, message, category):
+        # Добавляем в историю
+        notif_data = {"app": app_id, "title": title, "msg": message, "cat": category}
+        self.notifications_history.append(notif_data)
+
+        # Увеличиваем счетчик
+        self.unread_count += 1
+        self.update_message_badge()
+
+        # Показываем всплывающий баннер
+        display_title = title if title else app_id
+        self.banner.show_notification(display_title, message)
+
+    def update_message_badge(self):
+        # Обновление текста на кнопке сообщений
+        if self.unread_count > 0:
+            self.btn_messages.setText(f"💬 ({self.unread_count})")
+            self.btn_messages.setStyleSheet("color: #ff3333; font-weight: bold;")
+        else:
+            self.btn_messages.setText("💬")
+            self.btn_messages.setStyleSheet("")
+
+    def open_messages_screen(self):
+        # При открытии списка сбрасываем счётчик
+        self.unread_count = 0
+        self.update_message_badge()
+        # Показать QListWidget с self.notifications_history...
+
+    def update_media_widget(self, now_playing: dict):
+        """
+        Принимает словарь с данными плеера от BluetoothThread
+        Keys: player_name, state, artist, album, title, duration
+        """
+        artist = now_playing.get("artist", "")
+        title = now_playing.get("title", "")
+        state = now_playing.get("state", "")
+
+        # Формируем строку для отображения
+        if artist and title:
+            track_info = f"{artist} — {title}"
+        elif title:
+            track_info = title
+        else:
+            track_info = "Нет трека"
+
+        print(f"[MEDIA] State: {state} | {track_info}")
+
+        # Обновляем QLabels интерфейса (подставьте имя вашего QLabel для плеера)
+        if hasattr(self, 'lbl_track_title'):
+            self.lbl_track_title.setText(track_info)
+
+        if hasattr(self, 'btn_play_pause'):
+            # Изменяем иконку/текст кнопки в зависимости от статуса
+            if state == "playing":
+                self.btn_play_pause.setText("⏸")
+            else:
+                self.btn_play_pause.setText("▶")
+
+    def setup_bluetooth_ui(self):
+        # 1. Привязываем сигнал обновления статуса к метке
+        self.bt_thread.status_changed.connect(self.lbl_ble_status.setText)
+
+        # 2. Переключатель Advertising (включение / выключение видимости)
+        self.rb_ble_advertising.toggled.connect(self.on_ble_advertising_toggled)
+
+        # 3. Кнопка «Забыть устройства»
+        self.btn_forget_paired_devices.clicked.connect(self.on_forget_devices_clicked)
+
+    def on_ble_advertising_toggled(self, checked: bool):
+        if checked:
+            self.lbl_ble_status.setText("Режим поиска (Advertising) включен")
+            # Если поток ещё не запущен — запускаем
+            if not self.bt_thread.isRunning():
+                self.bt_thread.start()
+        else:
+            self.lbl_ble_status.setText("Bluetooth отключен")
+
+    def on_forget_devices_clicked(self):
+        # Вызываем очистку через поток
+        success = self.bt_thread.forget_paired_devices()
+        if success:
+            self.lbl_ble_status.setText("Все связи сброшены. Готово к новой паре")
 
     def open_keyboard(self):
         dialog = T9Dialog(self, "Парк Горького")
@@ -518,6 +679,7 @@ class BikeComputerWindow(QMainWindow):
     def setup_track_buttons(self):
         if hasattr(self, 'btn_play_pause_track'):
             self.btn_play_pause_track.clicked.connect(self.toggle_recording)
+
         if hasattr(self, 'btn_stop_track'):
             self.btn_stop_track.clicked.connect(self.stop_recording)
 
@@ -647,7 +809,7 @@ class BikeComputerWindow(QMainWindow):
             incline_percent = math.tan(pitch_rad) * 100
 
             if hasattr(self, 'stat_climb'):
-                self.stat_climb.setText(f"{incline_percent:.1f}")
+                self.stat_climb.setText(f"{incline_percent:.0f}")
 
     def closeEvent(self, event):
         self.serial_thread.stop()
