@@ -173,7 +173,15 @@ class SerialThread(QThread):
         self.running = False
         self.wait()
 
+class PlayerWidget(QWidget):
+    def __init__(self, ancs_thread, parent=None):
+        super().__init__(parent)
+        self.ancs = ancs_thread  # Сохраняем ссылку на поток/клиент
 
+        # Подключаем прямым вызовом метода (без lambda, если аргументы не требуются):
+        self.btn_play.clicked.connect(self.ancs.play_pause)
+        self.btn_next.clicked.connect(self.ancs.next_track)
+        self.btn_prev.clicked.connect(self.ancs.prev_track)
 # =========================================================
 # ГЛАВНОЕ ОКНО
 # =========================================================
@@ -250,7 +258,13 @@ class BikeComputerWindow(QMainWindow):
             self.btn_settings_to_ui.clicked.connect(lambda: self.stackedWidget_2.setCurrentIndex(0))
         if hasattr(self, 'btn_settings_to_wifi'):
             self.btn_settings_to_wifi.clicked.connect(lambda: self.stackedWidget_2.setCurrentIndex(1))
-
+        # Привязка кнопок управления плеером
+        if hasattr(self, 'btn_pause_player'):
+            self.btn_pause_player.clicked.connect(self.bt_thread.play_pause)
+        if hasattr(self, 'btn_next'):
+            self.btn_next.clicked.connect(self.bt_thread.next_track)
+        if hasattr(self, 'btn_prev'):
+            self.btn_prev.clicked.connect(self.bt_thread.prev_track)
 
 
         self.setup_track_buttons()
@@ -362,15 +376,7 @@ class BikeComputerWindow(QMainWindow):
                 if hasattr(self, widget.objectName()):
                     widget.setFont(QFont(family, size, weight))
 
-    class PlayerWidget(QWidget):
-        def __init__(self, ancs_thread, parent=None):
-            super().__init__(parent)
-            self.ancs = ancs_thread  # Сохраняем ссылку на поток/клиент
 
-            # Подключаем прямым вызовом метода (без lambda, если аргументы не требуются):
-            self.btn_play.clicked.connect(self.ancs.play_pause)
-            self.btn_next.clicked.connect(self.ancs.next_track)
-            self.btn_prev.clicked.connect(self.ancs.prev_track)
 
     def handle_new_notification(self, app_id, title, message, category):
         # Добавляем в историю
@@ -423,12 +429,11 @@ class BikeComputerWindow(QMainWindow):
         if hasattr(self, 'lbl_track_title'):
             self.lbl_track_title.setText(track_info)
 
-        if hasattr(self, 'btn_play_pause'):
-            # Изменяем иконку/текст кнопки в зависимости от статуса
+        if hasattr(self, 'btn_pause_player'):
             if state == "playing":
-                self.btn_play_pause.setText("⏸")
+                self.btn_pause_player.setText("⏸")
             else:
-                self.btn_play_pause.setText("▶")
+                self.btn_pause_player.setText("▶")
 
     def setup_bluetooth_ui(self):
         # 1. Привязываем сигнал обновления статуса к метке
