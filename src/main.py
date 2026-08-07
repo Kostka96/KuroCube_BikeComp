@@ -10,7 +10,7 @@ from datetime import date, datetime
 
 from PyQt6 import uic
 from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout
-from PyQt6.QtCore import QThread, pyqtSignal, QSize, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer
 from PyQt6.QtGui import QIcon, QFontDatabase, QFont
 
 from T9Dialog import T9Dialog
@@ -128,6 +128,8 @@ class BikeComputerWindow(QMainWindow):
         super().__init__()
         ui_path = os.path.join(SRC_DIR, 'KuroCube_BikeComp_UI.ui')
         uic.loadUi(ui_path, self)
+        #self.showFullScreen()
+        #self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
 
         FONTS = load_custom_fonts()
         self.config_file = CONFIG_PATH
