@@ -3,7 +3,7 @@ import sys
 import logging
 from PyQt6.QtCore import QThread, pyqtSignal
 import subprocess
-
+from ancs_client import AncsClient
 # Флаг доступности DBus (для работы на Linux / RPi)
 try:
     import dbus
