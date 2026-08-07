@@ -202,8 +202,8 @@ class BikeComputerWindow(QMainWindow):
         self.bt_thread = BluetoothThread()
         self.bt_thread.notification_received.connect(self.handle_new_notification)
         self.bt_thread.now_playing_changed.connect(self.update_media_widget)
+        self.setup_bluetooth_ui()  # ← сначала цепляем сигналы к lbl_ble_status
         self.bt_thread.start()
-        self.setup_bluetooth_ui()
 
         FONTS = load_custom_fonts()
         self.config_file = CONFIG_PATH

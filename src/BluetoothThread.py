@@ -7,16 +7,17 @@ try:
     import dbus.mainloop.glib
     from gi.repository import GLib
     from ancs_client import AncsClient
+    import ancs_client as _ancs_mod  # ← нужен для подмены коллбеков
     HAS_DBUS = True
 except ImportError:
     HAS_DBUS = False
     AncsClient = None
+    _ancs_mod = None
 
 
 class BluetoothThread(QThread):
-    # Сигналы для PyQt UI
-    notification_received = pyqtSignal(str, str, str, str)  # app_id, title, message, category
-    now_playing_changed = pyqtSignal(dict)  # track info[cite: 3]
+    notification_received = pyqtSignal(str, str, str, str)
+    now_playing_changed = pyqtSignal(dict)
     status_changed = pyqtSignal(str)
 
     def __init__(self, parent=None):
@@ -25,13 +26,11 @@ class BluetoothThread(QThread):
         self.client = None
 
     def forget_paired_devices(self):
-        """Принудительно отключает текущее устройство и сбрасывает все связи."""
         if not HAS_DBUS:
-            print("[BT] Сброс не поддерживается на Windows.")
+            self.status_changed.emit("Сброс не поддерживается на Windows")
             return False
 
         try:
-            # 1. Принудительно отключаем текущее устройство
             if self.client and self.client.device_path:
                 try:
                     dev_iface = dbus.Interface(
@@ -40,58 +39,67 @@ class BluetoothThread(QThread):
                     )
                     dev_iface.Disconnect()
                 except Exception as e:
-                    print(f"[BT] Не удалось отключить устройство напрямую: {e}")
+                    print(f"[BT] Не удалось отключить устройство: {e}")
 
-            # 2. Удаляем все парные устройства
             import subprocess
             result = subprocess.run(["bluetoothctl", "paired-devices"], capture_output=True, text=True)
-            lines = result.stdout.strip().split("\n")
-
-            for line in lines:
+            for line in result.stdout.strip().split("\n"):
                 parts = line.split()
                 if len(parts) >= 2 and parts[0] == "Device":
                     mac = parts[1]
                     subprocess.run(["bluetoothctl", "remove", mac])
-                    print(f"[BT] Удалено из памяти: {mac}")
+                    print(f"[BT] Удалено: {mac}")
 
-            self.status_changed.emit("Все связи сброшены. Включите поиск на iPhone")
+            self.status_changed.emit("Все связи сброшены")
             return True
         except Exception as e:
-            print(f"[BT ERROR] Ошибка при очистке: {e}")
+            print(f"[BT ERROR] {e}")
+            self.status_changed.emit(f"Ошибка сброса: {e}")
             return False
 
     def run(self):
         if not HAS_DBUS:
             print("[BT WARNING] dbus/GLib не найдены. Эмуляция на ПК.")
+            self.status_changed.emit("Bluetooth недоступен (Windows)")
             return
 
+        self.status_changed.emit("Инициализация Bluetooth...")
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
         bus = dbus.SystemBus()
 
-        # Импортируем классы из вашего ancs_client.py
-        # В данном контексте привязываем коллбеки к сигналам PyQt:
         self.client = AncsClient(bus)
 
-        # Переопределяем методы передачи данных в Qt
+        # --- Правильная подмена коллбеков в модуле ancs_client ---
         def _on_notif(app_id, title, message, category):
             self.notification_received.emit(app_id, title, message, category)
 
         def _on_media(now_playing):
             self.now_playing_changed.emit(now_playing)
 
-        # Подменяем обработчики[cite: 3]
-        global on_notification, on_now_playing_changed
-        on_notification = _on_notif
-        on_now_playing_changed = _on_media
+        _ancs_mod.on_notification = _on_notif
+        _ancs_mod.on_now_playing_changed = _on_media
+
+        # --- Патчим отслеживание подключения устройства ---
+        original_interfaces_added = self.client._on_interfaces_added
+
+        def _patched_interfaces_added(path, interfaces):
+            original_interfaces_added(path, interfaces)
+            if "org.bluez.Device1" in interfaces:
+                self.status_changed.emit("Устройство подключено")
+                self.device_path = path  # синхронизируем
+
+        self.client._on_interfaces_added = _patched_interfaces_added
 
         try:
             self.client.start()
+            self.status_changed.emit("Ожидание подключения iPhone...")
             loop = GLib.MainLoop()
             loop.run()
         except Exception as e:
             print(f"[BT ERROR] {e}")
+            self.status_changed.emit(f"Ошибка Bluetooth: {e}")
 
-    # Публичные методы для управления плеером из кнопок UI
+    # Управление плеером
     def play_pause(self):
         if self.client:
             self.client.toggle_play_pause()
