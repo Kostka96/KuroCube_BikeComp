@@ -26,11 +26,12 @@ import struct
 import sys
 import logging
 
-import dbus
-import dbus.exceptions
-import dbus.mainloop.glib
-import dbus.service
-from gi.repository import GLib
+try:
+    import dbus
+    import dbus.service
+    import dbus.mainloop.glib
+except ImportError:
+    dbus = None
 
 # ---------------------------------------------------------------------------
 # BlueZ D-Bus constants

@@ -9,7 +9,7 @@ from http.server import SimpleHTTPRequestHandler, HTTPServer
 from datetime import date, datetime
 
 from PyQt6 import uic
-from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout
+from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer
 from PyQt6.QtGui import QIcon, QFontDatabase, QFont
 
@@ -19,6 +19,7 @@ from offline_map import OfflineMapWidget
 from NotificationBanner import NotificationBanner
 from BluetoothThread import BluetoothThread
 import serial.tools.list_ports
+
 # --- ГЛОБАЛЬНЫЕ ПУТИ ---
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.abspath(os.path.join(SRC_DIR, ".."))
@@ -250,6 +251,8 @@ class BikeComputerWindow(QMainWindow):
         if hasattr(self, 'btn_settings_to_wifi'):
             self.btn_settings_to_wifi.clicked.connect(lambda: self.stackedWidget_2.setCurrentIndex(1))
 
+
+
         self.setup_track_buttons()
         button_icons = [
             (self.btn_play_pause_track, "pause", 24, 24, "#CCCCCC")]
@@ -358,6 +361,16 @@ class BikeComputerWindow(QMainWindow):
             for widget, size, weight in font_settings:
                 if hasattr(self, widget.objectName()):
                     widget.setFont(QFont(family, size, weight))
+
+    class PlayerWidget(QWidget):
+        def __init__(self, ancs_thread, parent=None):
+            super().__init__(parent)
+            self.ancs = ancs_thread  # Сохраняем ссылку на поток/клиент
+
+            # Подключаем прямым вызовом метода (без lambda, если аргументы не требуются):
+            self.btn_play.clicked.connect(self.ancs.play_pause)
+            self.btn_next.clicked.connect(self.ancs.next_track)
+            self.btn_prev.clicked.connect(self.ancs.prev_track)
 
     def handle_new_notification(self, app_id, title, message, category):
         # Добавляем в историю

@@ -2,17 +2,15 @@ import struct
 import sys
 import logging
 from PyQt6.QtCore import QThread, pyqtSignal
-import subprocess
-from ancs_client import AncsClient
-# Флаг доступности DBus (для работы на Linux / RPi)
 try:
     import dbus
     import dbus.mainloop.glib
     from gi.repository import GLib
-
+    from ancs_client import AncsClient
     HAS_DBUS = True
 except ImportError:
     HAS_DBUS = False
+    AncsClient = None
 
 
 class BluetoothThread(QThread):
