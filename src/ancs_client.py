@@ -148,7 +148,6 @@ class Advertisement(dbus.service.Object):
     def Release(self):
         log.info("Advertisement released")
 
-
 # ---------------------------------------------------------------------------
 # Pairing agent — Just Works, без ввода PIN
 # ---------------------------------------------------------------------------
