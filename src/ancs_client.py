@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+"""
+ancs_client.py — минимальный ANCS-клиент для Raspberry Pi (BlueZ D-Bus API).
+"""
+
 import struct
 import sys
 import logging
@@ -8,10 +13,6 @@ try:
     import dbus.mainloop.glib
 except ImportError:
     dbus = None
-
-# ---------------------------------------------------------------------------
-# BlueZ D-Bus constants
-# ---------------------------------------------------------------------------
 
 BLUEZ_SERVICE_NAME = "org.bluez"
 ADAPTER_IFACE = "org.bluez.Adapter1"
@@ -28,10 +29,6 @@ DBUS_PROP_IFACE = "org.freedesktop.DBus.Properties"
 AGENT_PATH = "/kurocube/ancs/agent"
 ADV_PATH = "/kurocube/ancs/advertisement"
 DEVICE_NAME = "KuroCube"
-
-# ---------------------------------------------------------------------------
-# ANCS UUIDs (Apple Notification Center Service spec)
-# ---------------------------------------------------------------------------
 
 ANCS_SERVICE_UUID = "7905f431-b5ce-4e99-a40f-4b1e122d00d0"
 NOTIFICATION_SOURCE_UUID = "9fbf120d-6301-42d9-8c58-25e699a21dbd"
@@ -60,10 +57,6 @@ ATTR_NEGATIVE_ACTION_LABEL = 7
 
 COMMAND_GET_NOTIFICATION_ATTRIBUTES = 0
 
-# ---------------------------------------------------------------------------
-# AMS UUIDs (Apple Media Service spec) — статус плеера / управление
-# ---------------------------------------------------------------------------
-
 AMS_SERVICE_UUID = "89d3502b-0f36-433a-8ef4-c502ad55f8dc"
 AMS_REMOTE_COMMAND_UUID = "9b3c81d8-57b1-4a8a-b8df-0e56f7ca51c2"
 AMS_ENTITY_UPDATE_UUID = "2f7cabce-808d-411f-9a0c-bb92ba96c102"
@@ -86,7 +79,6 @@ PLAYBACK_STATE_NAMES = {
     "0": "paused", "1": "playing", "2": "rewinding", "3": "fast_forwarding",
 }
 
-# команды для send_remote_command()
 CMD_PLAY = 0
 CMD_PAUSE = 1
 CMD_TOGGLE_PLAY_PAUSE = 2
@@ -98,25 +90,14 @@ CMD_VOLUME_DOWN = 6
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("ancs")
 
-# ---------------------------------------------------------------------------
-# Callback hook — сюда подключаете вывод на экран велокомпьютера
-# ---------------------------------------------------------------------------
 
 def on_notification(app_id: str, title: str, message: str, category: str):
-    """Замените на реальный вывод на дисплей."""
     log.info("[%s] %s: %s — %s", category, app_id, title, message)
 
 
 def on_now_playing_changed(now_playing: dict):
-    """Вызывается при любом изменении состояния плеера (артист/трек/статус).
-    now_playing содержит ключи: player_name, state, artist, album, title, duration.
-    Замените на реальный вывод на дисплей."""
     log.info("Now playing: %s", now_playing)
 
-
-# ---------------------------------------------------------------------------
-# LE Advertisement
-# ---------------------------------------------------------------------------
 
 class Advertisement(dbus.service.Object):
     def __init__(self, bus, index):
@@ -148,11 +129,10 @@ class Advertisement(dbus.service.Object):
     def Release(self):
         log.info("Advertisement released")
 
-# ---------------------------------------------------------------------------
-# Pairing agent — Just Works, без ввода PIN
-# ---------------------------------------------------------------------------
 
 class Agent(dbus.service.Object):
+    """Pairing agent с авто-подтверждением. Используем KeyboardDisplay для iOS."""
+
     def __init__(self, bus, path):
         super().__init__(bus, path)
         log.info("Agent created at %s", path)
@@ -178,7 +158,7 @@ class Agent(dbus.service.Object):
 
     @dbus.service.method(AGENT_IFACE, in_signature="ouq", out_signature="")
     def DisplayPasskey(self, device, passkey, entered):
-        log.info("Agent: DisplayPasskey %s", passkey)
+        log.info("Agent: DisplayPasskey %s (entered %d)", passkey, entered)
         return
 
     @dbus.service.method(AGENT_IFACE, in_signature="os", out_signature="")
@@ -188,23 +168,18 @@ class Agent(dbus.service.Object):
 
     @dbus.service.method(AGENT_IFACE, in_signature="ou", out_signature="")
     def RequestConfirmation(self, device, passkey):
-        # Just Works: подтверждаем автоматически
-        log.info("Agent: RequestConfirmation from %s, passkey %s — auto-accepting", device, passkey)
+        log.info("Agent: RequestConfirmation from %s, passkey %s — AUTO-ACCEPTING", device, passkey)
         return
 
     @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="")
     def RequestAuthorization(self, device):
-        log.info("Agent: RequestAuthorization from %s — auto-accepting", device)
+        log.info("Agent: RequestAuthorization from %s — AUTO-ACCEPTING", device)
         return
 
     @dbus.service.method(AGENT_IFACE, in_signature="", out_signature="")
     def Cancel(self):
         log.info("Agent request cancelled")
 
-
-# ---------------------------------------------------------------------------
-# ANCS client
-# ---------------------------------------------------------------------------
 
 class AncsClient:
     def __init__(self, bus):
@@ -213,14 +188,11 @@ class AncsClient:
         self.control_point = None
         self.data_source = None
         self.device_path = None
-        # буфер для склейки фрагментированных ответов Data Source
         self._data_buffer = bytearray()
         self._pending_uid = None
         self._pending_app_id = None
         self._pending_category = "Other"
-        # защита от повторной подписки на одну и ту же характеристику
         self._bound_chars = set()
-        # AMS (Now Playing)
         self.remote_command = None
         self.entity_update = None
         self.entity_attribute = None
@@ -234,18 +206,23 @@ class AncsClient:
         objects = om.GetManagedObjects()
         for path, interfaces in objects.items():
             if ADAPTER_IFACE in interfaces:
+                log.info("Found adapter: %s", path)
                 return path
         raise RuntimeError("Bluetooth adapter not found")
 
     def setup_adapter(self):
         adapter_path = self.find_adapter()
-        adapter_props = dbus.Interface(
-            self.bus.get_object(BLUEZ_SERVICE_NAME, adapter_path), DBUS_PROP_IFACE
-        )
-        adapter_props.Set(ADAPTER_IFACE, "Powered", dbus.Boolean(True))
-        adapter_props.Set(ADAPTER_IFACE, "Pairable", dbus.Boolean(True))
-        adapter_props.Set(ADAPTER_IFACE, "Discoverable", dbus.Boolean(True))
-        adapter_props.Set(ADAPTER_IFACE, "Alias", dbus.String(DEVICE_NAME))
+        adapter = dbus.Interface(self.bus.get_object(BLUEZ_SERVICE_NAME, adapter_path), DBUS_PROP_IFACE)
+
+        # Включаем адаптер и сбрасываем таймауты
+        adapter.Set(ADAPTER_IFACE, "Powered", dbus.Boolean(True))
+        adapter.Set(ADAPTER_IFACE, "Pairable", dbus.Boolean(True))
+        adapter.Set(ADAPTER_IFACE, "PairableTimeout", dbus.UInt32(0))      # Бесконечно pairable
+        adapter.Set(ADAPTER_IFACE, "Discoverable", dbus.Boolean(True))
+        adapter.Set(ADAPTER_IFACE, "DiscoverableTimeout", dbus.UInt32(0))  # Бесконечно discoverable
+        adapter.Set(ADAPTER_IFACE, "Alias", dbus.String(DEVICE_NAME))
+
+        log.info("Adapter configured: Pairable=True, Discoverable=True, timeouts=0")
         return adapter_path
 
     def register_agent(self):
@@ -253,9 +230,10 @@ class AncsClient:
         agent_manager = dbus.Interface(
             self.bus.get_object(BLUEZ_SERVICE_NAME, "/org/bluez"), AGENT_MANAGER_IFACE
         )
-        agent_manager.RegisterAgent(AGENT_PATH, "NoInputNoOutput")
+        # KeyboardDisplay — iOS принимает этот тип, в отличие от NoInputNoOutput
+        agent_manager.RegisterAgent(AGENT_PATH, "KeyboardDisplay")
         agent_manager.RequestDefaultAgent(AGENT_PATH)
-        log.info("Pairing agent registered (Just Works)")
+        log.info("Pairing agent registered (KeyboardDisplay)")
 
     def register_advertisement(self, adapter_path):
         try:
@@ -267,7 +245,7 @@ class AncsClient:
             ad_manager.RegisterAdvertisement(
                 ad.path, {},
                 reply_handler=lambda: log.info("Advertising started as '%s'", DEVICE_NAME),
-                error_handler=lambda e: log.warning("Advertising не запущен (устройство уже подключено): %s", e),
+                error_handler=lambda e: log.warning("Advertising не запущен: %s", e),
             )
         except Exception as e:
             log.warning("Не удалось зарегистрировать Advertisement: %s", e)
@@ -280,19 +258,33 @@ class AncsClient:
         om = dbus.Interface(self.bus.get_object(BLUEZ_SERVICE_NAME, "/"), DBUS_OM_IFACE)
         om.connect_to_signal("InterfacesAdded", self._on_interfaces_added)
 
-        # если телефон уже был подключен к моменту старта — проверим сразу
         for path, interfaces in om.GetManagedObjects().items():
             if GATT_SERVICE_IFACE in interfaces:
                 self._maybe_bind_service(path, interfaces[GATT_SERVICE_IFACE])
             if GATT_CHRC_IFACE in interfaces:
                 self._maybe_bind_characteristic(path, interfaces[GATT_CHRC_IFACE])
 
-    # -- обнаружение сервисов/характеристик -------------------------------
-
     def _on_interfaces_added(self, path, interfaces):
         if DEVICE_IFACE in interfaces:
-            log.info("Device connected: %s", path)
+            props = interfaces[DEVICE_IFACE]
+            addr = props.get("Address", "unknown")
+            paired = bool(props.get("Paired", False))
+            connected = bool(props.get("Connected", False))
+            log.info("Device event: %s | addr=%s | paired=%s | connected=%s", path, addr, paired, connected)
             self.device_path = path
+
+            # Если устройство подключено, но не спарено — форсируем pairing
+            if connected and not paired:
+                log.info("Device connected but not paired — triggering Pair()")
+                try:
+                    dev_iface = dbus.Interface(
+                        self.bus.get_object(BLUEZ_SERVICE_NAME, path), DEVICE_IFACE
+                    )
+                    dev_iface.Pair(reply_handler=lambda: log.info("Pair() succeeded"),
+                                   error_handler=lambda e: log.warning("Pair() failed: %s", e))
+                except Exception as e:
+                    log.warning("Could not call Pair(): %s", e)
+
         if GATT_SERVICE_IFACE in interfaces:
             self._maybe_bind_service(path, interfaces[GATT_SERVICE_IFACE])
         if GATT_CHRC_IFACE in interfaces:
@@ -304,13 +296,10 @@ class AncsClient:
             log.info("Found ANCS service at %s", path)
         elif uuid == AMS_SERVICE_UUID:
             log.info("Found AMS service at %s", path)
-        # характеристики придут своими отдельными InterfacesAdded (или уже
-        # учтены начальным сканированием в start()) — здесь их не трогаем,
-        # чтобы не подписаться на одну характеристику дважды.
 
     def _maybe_bind_characteristic(self, path, props):
         if path in self._bound_chars:
-            return  # уже подписаны — защита от повторной обработки
+            return
         uuid = props.get("UUID", "").lower()
         if uuid == NOTIFICATION_SOURCE_UUID:
             self.notification_source = path
@@ -361,8 +350,6 @@ class AncsClient:
         except dbus.exceptions.DBusException as e:
             log.warning("StartNotify failed for %s: %s", char_path, e)
 
-    # -- разбор Notification Source ----------------------------------------
-
     def _handle_notification_source(self, data: bytes):
         if len(data) < 8:
             return
@@ -398,8 +385,6 @@ class AncsClient:
         except dbus.exceptions.DBusException as e:
             log.warning("WriteValue to Control Point failed: %s", e)
 
-    # -- разбор Data Source ---------------------------------------------
-
     def _handle_data_source(self, data: bytes):
         self._data_buffer += data
         buf = self._data_buffer
@@ -409,7 +394,6 @@ class AncsClient:
         if command_id != COMMAND_GET_NOTIFICATION_ATTRIBUTES:
             return
 
-        # Если сообщение с этим UID уже обработано, пропускаем
         if getattr(self, "_last_processed_uid", None) == uid:
             return
 
@@ -420,7 +404,7 @@ class AncsClient:
             length = struct.unpack("<H", buf[offset + 1: offset + 3])[0]
             value_end = offset + 3 + length
             if value_end > len(buf):
-                return  # ждем фрагменты
+                return
             value = bytes(buf[offset + 3: value_end]).decode("utf-8", errors="replace")
             attrs[attr_id] = value
             offset = value_end
@@ -430,16 +414,12 @@ class AncsClient:
         message = attrs.get(ATTR_MESSAGE, "")
         category = getattr(self, "_pending_category", "Other")
 
-        # Запоминаем обработанный UID и очищаем буфер
         self._last_processed_uid = uid
         self._data_buffer = bytearray()
 
         on_notification(app_id, title, message, category)
 
-    # -- AMS: подписка на Now Playing и парсинг обновлений -------------
-
     def _register_media_attributes(self):
-        """Просим телефон присылать обновления по плееру и текущему треку."""
         if self.entity_update is None:
             return
         chrc = dbus.Interface(
@@ -461,14 +441,12 @@ class AncsClient:
         if len(data) < 3:
             return
         entity_id, attribute_id = data[0], data[1]
-        # data[2] = EntityUpdateFlags (bit0 = Truncated) — не используем пока
         value = bytes(data[3:]).decode("utf-8", errors="replace")
 
         if entity_id == AMS_ENTITY_PLAYER:
             if attribute_id == AMS_PLAYER_ATTR_NAME:
                 self.now_playing["player_name"] = value
             elif attribute_id == AMS_PLAYER_ATTR_PLAYBACK_INFO:
-                # формат значения: "<PlaybackState>,<PlaybackRate>,<ElapsedTime>"
                 state_code = value.split(",")[0] if value else ""
                 self.now_playing["state"] = PLAYBACK_STATE_NAMES.get(state_code, state_code)
         elif entity_id == AMS_ENTITY_TRACK:
@@ -484,7 +462,6 @@ class AncsClient:
         on_now_playing_changed(dict(self.now_playing))
 
     def send_remote_command(self, command_id: int):
-        """Отправить команду управления плеером (CMD_PLAY, CMD_NEXT_TRACK, ...)."""
         if self.remote_command is None:
             log.warning("Remote Command characteristic not ready yet")
             return
@@ -512,14 +489,6 @@ class AncsClient:
         self.send_remote_command(CMD_PREVIOUS_TRACK)
 
 
-# ---------------------------------------------------------------------------
-# Ручное управление из терминала — вводите слово (без скобок и точек):
-#   play / pause / toggle / next / prev
-# В реальном велокомпьютере вместо этого дёргайте client.play() / .pause() и
-# т.д. напрямую из обработчика кнопок (GPIO) — этот stdin-хук только для
-# ручной проверки с клавиатуры.
-# ---------------------------------------------------------------------------
-
 def _setup_stdin_commands(client: "AncsClient"):
     commands = {
         "play": client.play,
@@ -533,14 +502,14 @@ def _setup_stdin_commands(client: "AncsClient"):
     def on_stdin_ready(source, condition):
         line = sys.stdin.readline().strip().lower()
         if not line:
-            return True  # продолжаем слушать
+            return True
         fn = commands.get(line)
         if fn is None:
             log.info("Неизвестная команда '%s'. Доступно: %s", line, ", ".join(commands))
         else:
             log.info("Команда: %s", line)
             fn()
-        return True  # True = не отписываться, ждать следующую строку
+        return True
 
     GLib.io_add_watch(sys.stdin, GLib.IO_IN, on_stdin_ready)
 
@@ -553,8 +522,7 @@ def main():
     client.start()
     _setup_stdin_commands(client)
 
-    log.info("Ждём подключения iPhone... Откройте на телефоне Settings -> Bluetooth и подключитесь к '%s'", DEVICE_NAME)
-    log.info("Команды с клавиатуры: play / pause / toggle / next / prev")
+    log.info("Ждём подключения iPhone... Подключитесь к '%s' в Settings -> Bluetooth", DEVICE_NAME)
     GLib.MainLoop().run()
 
 
