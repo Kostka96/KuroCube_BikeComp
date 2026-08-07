@@ -1,27 +1,3 @@
-#!/usr/bin/env python3
-"""
-ancs_client.py — минимальный ANCS-клиент для Raspberry Pi (BlueZ D-Bus API).
-
-Что делает:
-  1. Рекламирует Pi как BLE peripheral (чтобы iPhone мог его найти и подключиться).
-  2. Регистрирует pairing-агента (NoInputNoOutput / Just Works) для автоматического бондинга.
-  3. После подключения и бондинга ищет на телефоне сервис ANCS и работает как GATT-клиент:
-     - подписывается на Notification Source,
-     - при получении новых уведомлений запрашивает через Control Point
-       атрибуты (AppIdentifier, Title, Message),
-     - собирает ответ из Data Source и вызывает on_notification(...) callback.
-
-Требования на Pi:
-  sudo apt-get install -y python3-dbus python3-gi bluez
-  sudo systemctl enable bluetooth --now
-
-Запуск:
-  sudo python3 ancs_client.py
-  (root нужен для управления адаптером/рекламой через BlueZ)
-
-Протестировано на BlueZ 5.5x (штатный в Raspberry Pi OS Bookworm).
-"""
-
 import struct
 import sys
 import logging
@@ -178,37 +154,48 @@ class Advertisement(dbus.service.Object):
 # ---------------------------------------------------------------------------
 
 class Agent(dbus.service.Object):
+    def __init__(self, bus, path):
+        super().__init__(bus, path)
+        log.info("Agent created at %s", path)
+
     @dbus.service.method(AGENT_IFACE, in_signature="", out_signature="")
     def Release(self):
         log.info("Agent released")
 
     @dbus.service.method(AGENT_IFACE, in_signature="os", out_signature="")
     def AuthorizeService(self, device, uuid):
+        log.info("Agent: AuthorizeService %s for %s", uuid, device)
         return
 
     @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="s")
     def RequestPinCode(self, device):
+        log.info("Agent: RequestPinCode from %s", device)
         return "000000"
 
     @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="u")
     def RequestPasskey(self, device):
+        log.info("Agent: RequestPasskey from %s", device)
         return dbus.UInt32(0)
 
     @dbus.service.method(AGENT_IFACE, in_signature="ouq", out_signature="")
     def DisplayPasskey(self, device, passkey, entered):
+        log.info("Agent: DisplayPasskey %s", passkey)
         return
 
     @dbus.service.method(AGENT_IFACE, in_signature="os", out_signature="")
     def DisplayPinCode(self, device, pincode):
+        log.info("Agent: DisplayPinCode %s", pincode)
         return
 
     @dbus.service.method(AGENT_IFACE, in_signature="ou", out_signature="")
     def RequestConfirmation(self, device, passkey):
         # Just Works: подтверждаем автоматически
+        log.info("Agent: RequestConfirmation from %s, passkey %s — auto-accepting", device, passkey)
         return
 
     @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="")
     def RequestAuthorization(self, device):
+        log.info("Agent: RequestAuthorization from %s — auto-accepting", device)
         return
 
     @dbus.service.method(AGENT_IFACE, in_signature="", out_signature="")

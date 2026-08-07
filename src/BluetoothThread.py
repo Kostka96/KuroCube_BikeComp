@@ -26,34 +26,61 @@ class BluetoothThread(QThread):
         self.client = None
 
     def forget_paired_devices(self):
+        """Отключает и удаляет ВСЕ спаренные устройства через D-Bus."""
         if not HAS_DBUS:
             self.status_changed.emit("Сброс не поддерживается на Windows")
             return False
 
         try:
-            if self.client and self.client.device_path:
+            bus = dbus.SystemBus()
+            om = dbus.Interface(
+                bus.get_object("org.bluez", "/"),
+                "org.freedesktop.DBus.ObjectManager"
+            )
+            objects = om.GetManagedObjects()
+
+            removed_count = 0
+            for path, interfaces in objects.items():
+                if "org.bluez.Device1" not in interfaces:
+                    continue
+
                 try:
-                    dev_iface = dbus.Interface(
-                        self.client.bus.get_object("org.bluez", self.client.device_path),
-                        "org.bluez.Device1"
+                    props_iface = dbus.Interface(
+                        bus.get_object("org.bluez", path),
+                        "org.freedesktop.DBus.Properties"
                     )
-                    dev_iface.Disconnect()
+                    paired = bool(props_iface.Get("org.bluez.Device1", "Paired"))
+
+                    if paired:
+                        # Отключаем
+                        dev_iface = dbus.Interface(
+                            bus.get_object("org.bluez", path),
+                            "org.bluez.Device1"
+                        )
+                        try:
+                            dev_iface.Disconnect()
+                        except Exception:
+                            pass  # Может уже быть отключено
+
+                        # Удаляем через адаптер
+                        adapter_path = path.rsplit("/dev_", 1)[0]
+                        adapter = dbus.Interface(
+                            bus.get_object("org.bluez", adapter_path),
+                            "org.bluez.Adapter1"
+                        )
+                        adapter.RemoveDevice(path)
+                        removed_count += 1
+                        print(f"[BT] Удалено устройство: {path}")
+
                 except Exception as e:
-                    print(f"[BT] Не удалось отключить устройство: {e}")
+                    print(f"[BT] Не удалось удалить {path}: {e}")
 
-            import subprocess
-            result = subprocess.run(["bluetoothctl", "paired-devices"], capture_output=True, text=True)
-            for line in result.stdout.strip().split("\n"):
-                parts = line.split()
-                if len(parts) >= 2 and parts[0] == "Device":
-                    mac = parts[1]
-                    subprocess.run(["bluetoothctl", "remove", mac])
-                    print(f"[BT] Удалено: {mac}")
-
-            self.status_changed.emit("Все связи сброшены")
+            msg = f"Сброшено устройств: {removed_count}. Включите поиск на iPhone"
+            self.status_changed.emit(msg)
             return True
+
         except Exception as e:
-            print(f"[BT ERROR] {e}")
+            print(f"[BT ERROR] Ошибка при очистке: {e}")
             self.status_changed.emit(f"Ошибка сброса: {e}")
             return False
 
