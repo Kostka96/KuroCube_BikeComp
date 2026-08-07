@@ -27,13 +27,25 @@ class BluetoothThread(QThread):
         self.client = None
 
     def forget_paired_devices(self):
-        """Удаляет все привязанные Bluetooth-устройства на Raspberry Pi."""
+        """Принудительно отключает текущее устройство и сбрасывает все связи."""
         if not HAS_DBUS:
-            print("[BT] Сброс устройств не поддерживается на Windows.")
+            print("[BT] Сброс не поддерживается на Windows.")
             return False
 
         try:
-            # Получаем список привязанных устройств
+            # 1. Если есть активное подключение, сначала отключаем устройство
+            if self.client and self.client.device_path:
+                try:
+                    dev_iface = dbus.Interface(
+                        self.client.bus.get_object("org.bluez", self.client.device_path),
+                        "org.bluez.Device1"
+                    )
+                    dev_iface.Disconnect()
+                    print(f"[BT] Принудительно отключен: {self.client.device_path}")
+                except Exception as e:
+                    print(f"[BT] Не удалось отключить устройство напрямую: {e}")
+
+            # 2. Удаляем все парные устройства через bluetoothctl
             result = subprocess.run(["bluetoothctl", "paired-devices"], capture_output=True, text=True)
             lines = result.stdout.strip().split("\n")
 
@@ -42,12 +54,17 @@ class BluetoothThread(QThread):
                 if len(parts) >= 2 and parts[0] == "Device":
                     mac = parts[1]
                     subprocess.run(["bluetoothctl", "remove", mac])
-                    print(f"[BT] Удалено устройство: {mac}")
+                    print(f"[BT] Удалено из памяти: {mac}")
 
-            self.status_changed.emit("История устройств очищена")
+            # 3. Перезапускаем режим Advertising, чтобы iPhone снова «увидел» Pi как новое устройство
+            if self.client:
+                adapter_path = self.client.find_adapter()
+                self.client.register_advertisement(adapter_path)
+
+            self.status_changed.emit("Связи сброшены. Включите поиск на iPhone")
             return True
         except Exception as e:
-            print(f"[BT ERROR] Ошибка при очистке устройств: {e}")
+            print(f"[BT ERROR] Ошибка при полной очистке: {e}")
             return False
 
     def run(self):
