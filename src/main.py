@@ -195,6 +195,7 @@ class BikeComputerWindow(QMainWindow):
 
         self.unread_count = 0
         self.notifications_history = []
+
         # 1. Создаем виджет всплывающего уведомления
         self.banner = NotificationBanner(self)
 
@@ -202,7 +203,6 @@ class BikeComputerWindow(QMainWindow):
         self.bt_thread = BluetoothThread()
         self.bt_thread.notification_received.connect(self.handle_new_notification)
         self.bt_thread.now_playing_changed.connect(self.update_media_widget)
-        self.setup_bluetooth_ui()  # ← сначала цепляем сигналы к lbl_ble_status
         self.bt_thread.start()
 
         FONTS = load_custom_fonts()
@@ -376,8 +376,6 @@ class BikeComputerWindow(QMainWindow):
                 if hasattr(self, widget.objectName()):
                     widget.setFont(QFont(family, size, weight))
 
-
-
     def handle_new_notification(self, app_id, title, message, category):
         # Добавляем в историю
         notif_data = {"app": app_id, "title": title, "msg": message, "cat": category}
@@ -404,7 +402,6 @@ class BikeComputerWindow(QMainWindow):
         # При открытии списка сбрасываем счётчик
         self.unread_count = 0
         self.update_message_badge()
-        # Показать QListWidget с self.notifications_history...
 
     def update_media_widget(self, now_playing: dict):
         """
@@ -429,11 +426,12 @@ class BikeComputerWindow(QMainWindow):
         if hasattr(self, 'lbl_track_title'):
             self.lbl_track_title.setText(track_info)
 
-        if hasattr(self, 'btn_pause_player'):
+        if hasattr(self, 'btn_play_pause'):
+            # Изменяем иконку/текст кнопки в зависимости от статуса
             if state == "playing":
-                self.btn_pause_player.setText("⏸")
+                self.btn_play_pause.setText("⏸")
             else:
-                self.btn_pause_player.setText("▶")
+                self.btn_play_pause.setText("▶")
 
     def setup_bluetooth_ui(self):
         # 1. Привязываем сигнал обновления статуса к метке

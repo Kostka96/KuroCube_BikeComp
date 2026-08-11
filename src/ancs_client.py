@@ -405,7 +405,7 @@ class AncsClient:
         except dbus.exceptions.DBusException as e:
             log.warning("WriteValue failed: %s", e)
 
-    def _handle_data_source(self, data):
+    def _handle_data_source(self, data: bytes):
         self._data_buffer += data
         buf = self._data_buffer
         if len(buf) < 5:
@@ -414,6 +414,7 @@ class AncsClient:
         if command_id != COMMAND_GET_NOTIFICATION_ATTRIBUTES:
             return
 
+        # Если сообщение с этим UID уже обработано, пропускаем
         if getattr(self, "_last_processed_uid", None) == uid:
             return
 
@@ -424,7 +425,7 @@ class AncsClient:
             length = struct.unpack("<H", buf[offset + 1: offset + 3])[0]
             value_end = offset + 3 + length
             if value_end > len(buf):
-                return
+                return  # ждем фрагменты
             value = bytes(buf[offset + 3: value_end]).decode("utf-8", errors="replace")
             attrs[attr_id] = value
             offset = value_end
@@ -434,6 +435,7 @@ class AncsClient:
         message = attrs.get(ATTR_MESSAGE, "")
         category = getattr(self, "_pending_category", "Other")
 
+        # Запоминаем обработанный UID и очищаем буфер
         self._last_processed_uid = uid
         self._data_buffer = bytearray()
 
