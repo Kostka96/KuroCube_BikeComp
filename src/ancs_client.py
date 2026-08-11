@@ -87,6 +87,8 @@ CMD_VOLUME_DOWN = 6
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("ancs")
 
+def on_connection_status_changed(connected: bool, device_name: str):
+    log.info("Status changed: connected=%s, name=%s", connected, device_name)
 
 def on_notification(app_id, title, message, category):
     log.info("[%s] %s: %s — %s", category, app_id, title, message)
@@ -103,16 +105,24 @@ class Advertisement(dbus.service.Object):
         self.ad_type = "peripheral"
         self.local_name = DEVICE_NAME
         self.include_tx_power = False
+        # ANCS Service Solicit UUID (Apple Notification Center Service)
+        self.solicit_uuids = ["7905F431-B5CE-4E99-A40F-4B1E122D00D0"]
         dbus.service.Object.__init__(self, bus, self.path)
 
     def get_properties(self):
-        return {
-            LE_ADVERTISEMENT_IFACE: {
-                "Type": self.ad_type,
-                "LocalName": dbus.String(self.local_name),
-                "IncludeTxPower": dbus.Boolean(self.include_tx_power),
-            }
+        properties = {
+            "Type": self.ad_type,
+            "LocalName": dbus.String(self.local_name),
+            "IncludeTxPower": dbus.Boolean(self.include_tx_power),
         }
+
+        # Обязательно добавляем SolicitUUIDs для анонса ANCS в BlueZ
+        if self.solicit_uuids:
+            properties["SolicitUUIDs"] = dbus.Array(
+                [dbus.String(u) for u in self.solicit_uuids], signature="s"
+            )
+
+        return {LE_ADVERTISEMENT_IFACE: properties}
 
     @dbus.service.method(DBUS_PROP_IFACE, in_signature="s", out_signature="a{sv}")
     def GetAll(self, interface):
@@ -125,7 +135,6 @@ class Advertisement(dbus.service.Object):
     @dbus.service.method(LE_ADVERTISEMENT_IFACE, in_signature="", out_signature="")
     def Release(self):
         log.info("Advertisement released")
-
 
 class Agent(dbus.service.Object):
     """Pairing agent с авто-подтверждением."""
@@ -215,8 +224,8 @@ class AncsClient:
         adapter.Set(ADAPTER_IFACE, "Powered", dbus.Boolean(True))
         adapter.Set(ADAPTER_IFACE, "Pairable", dbus.Boolean(True))
         adapter.Set(ADAPTER_IFACE, "PairableTimeout", dbus.UInt32(0))
+        adapter.Set(ADAPTER_IFACE, "DiscoverableTimeout", dbus.UInt32(180))
         adapter.Set(ADAPTER_IFACE, "Discoverable", dbus.Boolean(True))
-        adapter.Set(ADAPTER_IFACE, "DiscoverableTimeout", dbus.UInt32(0))
         adapter.Set(ADAPTER_IFACE, "Alias", dbus.String(DEVICE_NAME))
         log.info("Adapter configured")
         return adapter_path
@@ -273,6 +282,31 @@ class AncsClient:
         except Exception as e:
             log.warning("RegisterAdvertisement exception: %s", e)
 
+    def connect_known_devices(self):
+        """Пытается установить соединение со всеми ранее сохранёнными (Paired) устройствами."""
+        try:
+            om = dbus.Interface(self.bus.get_object(BLUEZ_SERVICE_NAME, "/"), DBUS_OM_IFACE)
+            objects = om.GetManagedObjects()
+
+            for path, interfaces in objects.items():
+                if DEVICE_IFACE in interfaces:
+                    props = interfaces[DEVICE_IFACE]
+                    paired = bool(props.get("Paired", False))
+                    connected = bool(props.get("Connected", False))
+
+                    if paired and not connected:
+                        log.info("Найден сохраненный iPhone (%s). Пробуем Connect()...", path)
+                        dev_iface = dbus.Interface(
+                            self.bus.get_object(BLUEZ_SERVICE_NAME, path), DEVICE_IFACE
+                        )
+                        # Асинхронно вызываем Connect, чтобы не блокировать поток
+                        dev_iface.Connect(
+                            reply_handler=lambda: log.info("Успешное авто-подключение!"),
+                            error_handler=lambda e: log.debug("Фоновое авто-подключение ожидается от iOS: %s", e)
+                        )
+        except Exception as e:
+            log.warning("Ошибка при попытке автоподключения: %s", e)
+
     def start(self):
         adapter_path = self.setup_adapter()
         self.register_agent()
@@ -281,11 +315,43 @@ class AncsClient:
         om = dbus.Interface(self.bus.get_object(BLUEZ_SERVICE_NAME, "/"), DBUS_OM_IFACE)
         om.connect_to_signal("InterfacesAdded", self._on_interfaces_added)
 
+        # Слушаем изменения свойств (подключение / отключение)
+        self.bus.add_signal_receiver(
+            self._on_device_properties_changed,
+            signal_name="PropertiesChanged",
+            dbus_interface=DBUS_PROP_IFACE,
+            arg0=DEVICE_IFACE,
+            path_keyword="path"
+        )
+
         for path, interfaces in om.GetManagedObjects().items():
             if GATT_SERVICE_IFACE in interfaces:
                 self._maybe_bind_service(path, interfaces[GATT_SERVICE_IFACE])
             if GATT_CHRC_IFACE in interfaces:
                 self._maybe_bind_characteristic(path, interfaces[GATT_CHRC_IFACE])
+        self.connect_known_devices()
+
+    def _on_device_properties_changed(self, interface, changed, invalidated, path):
+        if "Connected" in changed:
+            connected = bool(changed["Connected"])
+
+            # Если телефон успешно подключился — выключаем режим Discoverable (перестает мигать)
+            if connected:
+                try:
+                    adapter_path = self.find_adapter()
+                    adapter = dbus.Interface(self.bus.get_object(BLUEZ_SERVICE_NAME, adapter_path), DBUS_PROP_IFACE)
+                    adapter.Set(ADAPTER_IFACE, "Discoverable", dbus.Boolean(False))
+                    log.info("Устройство подключено: Discoverable отключен")
+                except Exception as e:
+                    log.warning("Не удалось отключить Discoverable: %s", e)
+
+            # Получаем имя устройства
+            try:
+                dev_prop = dbus.Interface(self.bus.get_object(BLUEZ_SERVICE_NAME, path), DBUS_PROP_IFACE)
+                name = str(dev_prop.Get(DEVICE_IFACE, "Name"))
+            except Exception:
+                name = "iPhone"
+            on_connection_status_changed(connected, name)
 
     def _on_interfaces_added(self, path, interfaces):
         if DEVICE_IFACE in interfaces:
@@ -293,9 +359,21 @@ class AncsClient:
             addr = props.get("Address", "unknown")
             paired = bool(props.get("Paired", False))
             connected = bool(props.get("Connected", False))
+            name = str(props.get("Name", "iPhone"))
             log.info("Device event: %s | addr=%s | paired=%s | connected=%s", path, addr, paired, connected)
             self.device_path = path
 
+            # 1. Автоматически ставим Trusted=True для автоподключения при старте
+            try:
+                dev_prop = dbus.Interface(
+                    self.bus.get_object(BLUEZ_SERVICE_NAME, path), DBUS_PROP_IFACE
+                )
+                dev_prop.Set(DEVICE_IFACE, "Trusted", dbus.Boolean(True))
+                log.info("Device %s marked as Trusted", addr)
+            except Exception as e:
+                log.warning("Failed to set Trusted: %s", e)
+
+            # 2. Если подключается неопознанный девайс — делаем Pair()
             if connected and not paired:
                 log.info("Device connected but not paired — triggering Pair()")
                 try:
@@ -306,6 +384,9 @@ class AncsClient:
                                    error_handler=lambda e: log.warning("Pair() failed: %s", e))
                 except Exception as e:
                     log.warning("Could not call Pair(): %s", e)
+
+            # 3. Сигнализируем в UI о статусе
+            on_connection_status_changed(connected, name)
 
         if GATT_SERVICE_IFACE in interfaces:
             self._maybe_bind_service(path, interfaces[GATT_SERVICE_IFACE])
@@ -458,6 +539,7 @@ class AncsClient:
     def _handle_entity_update(self, data):
         if len(data) < 3:
             return
+
         entity_id, attribute_id = data[0], data[1]
         value = bytes(data[3:]).decode("utf-8", errors="replace")
 
@@ -465,15 +547,28 @@ class AncsClient:
             if attribute_id == AMS_PLAYER_ATTR_NAME:
                 self.now_playing["player_name"] = value
             elif attribute_id == AMS_PLAYER_ATTR_PLAYBACK_INFO:
-                state_code = value.split(",")[0] if value else ""
+                parts = value.split(",") if value else []
+                state_code = parts[0] if len(parts) > 0 else ""
+                # parts[2] — текущая позиция воспроизведения в секундах
+                elapsed = parts[2] if len(parts) > 2 else "0"
+
                 self.now_playing["state"] = PLAYBACK_STATE_NAMES.get(state_code, state_code)
+                self.now_playing["elapsed"] = elapsed
+
         elif entity_id == AMS_ENTITY_TRACK:
-            key = {AMS_TRACK_ATTR_ARTIST: "artist", AMS_TRACK_ATTR_ALBUM: "album",
-                   AMS_TRACK_ATTR_TITLE: "title", AMS_TRACK_ATTR_DURATION: "duration"}.get(attribute_id)
+            key = {
+                AMS_TRACK_ATTR_ARTIST: "artist",
+                AMS_TRACK_ATTR_ALBUM: "album",
+                AMS_TRACK_ATTR_TITLE: "title",
+                AMS_TRACK_ATTR_DURATION: "duration"
+            }.get(attribute_id)
+
             if key:
                 self.now_playing[key] = value
 
-        on_now_playing_changed(dict(self.now_playing))
+        # Уведомляем подписчиков об изменениях
+        if callable(getattr(self, 'on_now_playing_changed', None)):
+            self.on_now_playing_changed(dict(self.now_playing))
 
     def send_remote_command(self, command_id):
         if self.remote_command is None:
@@ -492,13 +587,16 @@ class AncsClient:
     def toggle_play_pause(self): self.send_remote_command(CMD_TOGGLE_PLAY_PAUSE)
     def next_track(self): self.send_remote_command(CMD_NEXT_TRACK)
     def previous_track(self): self.send_remote_command(CMD_PREVIOUS_TRACK)
-
+    def volume_up(self): self.send_remote_command(CMD_VOLUME_UP)
+    def volume_down(self): self.send_remote_command(CMD_VOLUME_DOWN)
 
 def _setup_stdin_commands(client):
     commands = {
         "play": client.play, "pause": client.pause,
         "toggle": client.toggle_play_pause, "next": client.next_track,
         "prev": client.previous_track, "previous": client.previous_track,
+        "volup": client.volume_up,
+        "voldown": client.volume_down,
     }
     def on_stdin_ready(source, condition):
         line = sys.stdin.readline().strip().lower()

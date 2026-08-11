@@ -15,6 +15,7 @@ from PyQt6.QtGui import QIcon, QFontDatabase, QFont
 from ui_interface import Ui_MainWindow
 from T9Dialog import T9Dialog
 from ui_utils import load_icon
+from ui_utils import MarqueeLabel
 from offline_map import OfflineMapWidget
 from NotificationBanner import NotificationBanner
 from BluetoothThread import BluetoothThread
@@ -53,6 +54,30 @@ def load_custom_fonts():
                 print(f"Ошибка загрузки шрифта: {file}")
     return loaded_fonts
 
+
+def format_time_seconds(seconds) -> str:
+    """Форматирует секунды в MM:SS."""
+    try:
+        total_seconds = int(float(seconds))
+        minutes = total_seconds // 60
+        secs = total_seconds % 60
+        return f"{minutes:02d}:{secs:02d}"
+    except (ValueError, TypeError):
+        return "00:00"
+
+
+def get_remaining_time(elapsed_raw, duration_raw) -> str:
+    """Вычисляет оставшееся время со знаком минус (-MM:SS)."""
+    try:
+        duration = float(duration_raw)
+        elapsed = float(elapsed_raw)
+        remaining = max(0, int(duration - elapsed))
+
+        minutes = remaining // 60
+        secs = remaining % 60
+        return f"{minutes:02d}:{secs:02d}"
+    except (ValueError, TypeError):
+        return "00:00"
 
 # =========================================================
 # СЕРВЕР ОФЛАЙН КАРТ
@@ -175,15 +200,6 @@ class SerialThread(QThread):
         self.running = False
         self.wait()
 
-class PlayerWidget(QWidget):
-    def __init__(self, ancs_thread, parent=None):
-        super().__init__(parent)
-        self.ancs = ancs_thread  # Сохраняем ссылку на поток/клиент
-
-        # Подключаем прямым вызовом метода (без lambda, если аргументы не требуются):
-        self.btn_play.clicked.connect(self.ancs.play_pause)
-        self.btn_next.clicked.connect(self.ancs.next_track)
-        self.btn_prev.clicked.connect(self.ancs.prev_track)
 # =========================================================
 # ГЛАВНОЕ ОКНО
 # =========================================================
@@ -191,7 +207,7 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
     def __init__(self):
         super().__init__()
         self.setupUi(self)
-        #self.showFullScreen()
+        self.showFullScreen()
         #self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
 
         self.unread_count = 0
@@ -203,8 +219,9 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
         # 2. Запускаем Bluetooth Поток
         self.bt_thread = BluetoothThread()
         self.bt_thread.notification_received.connect(self.handle_new_notification)
-        self.bt_thread.now_playing_changed.connect(self.update_media_widget)
+        self.bt_thread.now_playing_changed.connect(self.update_now_playing)
         self.bt_thread.start()
+        self.setup_bluetooth_ui()
 
         FONTS = load_custom_fonts()
         self.config_file = CONFIG_PATH
@@ -219,6 +236,12 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
         self.track_timer = QTimer(self)
         self.track_timer.setInterval(1000)
         self.track_timer.timeout.connect(self.update_track_time)
+        self.music_timer = QTimer(self)
+        self.music_timer.setInterval(1000)
+        self.music_timer.timeout.connect(self._tick_music_time)
+        self.current_elapsed = 0
+        self.current_duration = 0
+        self.is_music_playing = False
 
         # --- Одометр ---
         self.last_raw_trip = None
@@ -266,7 +289,26 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
             self.btn_next.clicked.connect(self.bt_thread.next_track)
         if hasattr(self, 'btn_prev'):
             self.btn_prev.clicked.connect(self.bt_thread.prev_track)
+        if hasattr(self, 'btn_volume_plus'):
+            self.btn_volume_plus.clicked.connect(self.bt_thread.volume_up)
+        if hasattr(self, 'btn_volume_minus'):
+            self.btn_volume_minus.clicked.connect(self.bt_thread.volume_down)
 
+        if hasattr(self, 'lbl_music_name'):
+            parent = self.lbl_music_name.parentWidget()
+            geo = self.lbl_music_name.geometry()
+            font = self.lbl_music_name.font()
+            style = self.lbl_music_name.styleSheet()
+
+
+            self.lbl_music_name.deleteLater()
+            self.lbl_music_name = MarqueeLabel(parent)
+            self.lbl_music_name.set_direction("right_to_left")
+            self.lbl_music_name.setGeometry(geo)
+            self.lbl_music_name.setFont(font)
+            self.lbl_music_name.setStyleSheet(style)
+            self.lbl_music_name.show()
+            self.lbl_music_name.set_speed(500)
 
         self.setup_track_buttons()
         button_icons = [
@@ -287,6 +329,7 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
 
         # --- ИКОНКИ ---
         label_icons = [
+            (self.lbl_status_bluetooth, "bluetooth_off", 24, 24, "#CCCCCC"),
             (self.lbl_satellite_icon, "satellite", 24, 24, "#55ff7f"),
             (self.stat_avg_speed_icon, "average", 24, 24, "#CCCCCC"),
             (self.stat_max_speed_icon, "max", 24, 24, "#CCCCCC"),
@@ -330,6 +373,7 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
             family = FONTS["Roboto-Regular"]
             font_settings = [
                 (self.lbl_clock, 18, QFont.Weight.Bold),
+                (self.lbl_status_bluetooth, 18, QFont.Weight.Bold),
                 (self.lbl_date, 12, QFont.Weight.Normal),
                 (self.lbl_satellite, 18, QFont.Weight.Normal),
                 (self.lbl_speed_text, 18, QFont.Weight.Normal),
@@ -377,6 +421,67 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
                 if hasattr(self, widget.objectName()):
                     widget.setFont(QFont(family, size, weight))
 
+    def _tick_music_time(self):
+        if self.is_music_playing:
+            self.current_elapsed += 1
+            # Корректируем, чтобы не вылезти за пределы длительности
+            if self.current_duration > 0 and self.current_elapsed > self.current_duration:
+                self.current_elapsed = self.current_duration
+
+            if hasattr(self, 'lbl_current_time_music'):
+                self.lbl_current_time_music.setText(format_time_seconds(self.current_elapsed))
+            if hasattr(self, 'lbl_max_time_music'):
+                self.lbl_max_time_music.setText(get_remaining_time(self.current_elapsed, self.current_duration))
+
+    def update_now_playing(self, data: dict):
+        # 1. Обновление иконки Play/Pause
+        state = str(data.get("state", "")).lower()
+        is_playing = state in ["1", "playing", "play"]
+        icon_name = "player_pause" if is_playing else "player_play"
+
+        if hasattr(self, 'btn_pause_player'):
+            pixmap = load_icon(icon_name, 24, 24, "#CCCCCC")
+            self.btn_pause_player.setIcon(QIcon(pixmap))
+            self.btn_pause_player.setIconSize(QSize(24, 24))
+
+        # 2. Обновление бегущей строки
+        if hasattr(self, 'lbl_music_name'):
+            title = data.get("title", "").strip()
+            artist = data.get("artist", "").strip()
+
+            if title and artist:
+                full_str = f"{title} — {artist}"
+            elif title:
+                full_str = title
+            elif artist:
+                full_str = artist
+            else:
+                full_str = "No Track"
+
+            # Передаем текст в уже созданный MarqueeLabel
+            self.lbl_music_name.set_marquee_text(full_str, max_len=25)
+
+        try:
+            self.current_elapsed = int(float(data.get("elapsed", 0)))
+            self.current_duration = int(float(data.get("duration", 0)))
+        except (ValueError, TypeError):
+            pass
+
+            # Управляем таймером в зависимости от статуса проигрывания
+        state = str(data.get("state", "")).lower()
+        self.is_music_playing = state in ["1", "playing", "play"]
+
+        if self.is_music_playing and not self.music_timer.isActive():
+            self.music_timer.start()
+        elif not self.is_music_playing and self.music_timer.isActive():
+            self.music_timer.stop()
+
+        # Первоначальное отображение при получении пакета
+        if hasattr(self, 'lbl_current_time_music'):
+            self.lbl_current_time_music.setText(format_time_seconds(self.current_elapsed))
+        if hasattr(self, 'lbl_max_time_music'):
+            self.lbl_max_time_music.setText(get_remaining_time(self.current_elapsed, self.current_duration))
+
     def handle_new_notification(self, app_id, title, message, category):
         # Добавляем в историю
         notif_data = {"app": app_id, "title": title, "msg": message, "cat": category}
@@ -393,56 +498,47 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
     def update_message_badge(self):
         # Обновление текста на кнопке сообщений
         if self.unread_count > 0:
-            self.btn_messages.setText(f"💬 ({self.unread_count})")
-            self.btn_messages.setStyleSheet("color: #ff3333; font-weight: bold;")
+            self.btn_message.setText(f"💬 ({self.unread_count})")
+            self.btn_message.setStyleSheet("color: #ff3333; font-weight: bold;")
         else:
-            self.btn_messages.setText("💬")
-            self.btn_messages.setStyleSheet("")
+            self.btn_message.setText("💬")
+            self.btn_message.setStyleSheet("")
 
     def open_messages_screen(self):
         # При открытии списка сбрасываем счётчик
         self.unread_count = 0
         self.update_message_badge()
 
-    def update_media_widget(self, now_playing: dict):
-        """
-        Принимает словарь с данными плеера от BluetoothThread
-        Keys: player_name, state, artist, album, title, duration
-        """
-        artist = now_playing.get("artist", "")
-        title = now_playing.get("title", "")
-        state = now_playing.get("state", "")
-
-        # Формируем строку для отображения
-        if artist and title:
-            track_info = f"{artist} — {title}"
-        elif title:
-            track_info = title
-        else:
-            track_info = "Нет трека"
-
-        print(f"[MEDIA] State: {state} | {track_info}")
-
-        # Обновляем QLabels интерфейса (подставьте имя вашего QLabel для плеера)
-        if hasattr(self, 'lbl_track_title'):
-            self.lbl_track_title.setText(track_info)
-
-        if hasattr(self, 'btn_play_pause'):
-            # Изменяем иконку/текст кнопки в зависимости от статуса
-            if state == "playing":
-                self.btn_play_pause.setText("⏸")
-            else:
-                self.btn_play_pause.setText("▶")
-
     def setup_bluetooth_ui(self):
-        # 1. Привязываем сигнал обновления статуса к метке
-        self.bt_thread.status_changed.connect(self.lbl_ble_status.setText)
+        # 1. Сигналы статуса
+        if hasattr(self, 'lbl_ble_status'):
+            self.bt_thread.status_changed.connect(self.lbl_ble_status.setText)
 
-        # 2. Переключатель Advertising (включение / выключение видимости)
-        self.rb_ble_advertising.toggled.connect(self.on_ble_advertising_toggled)
+        # 2. Подключаем смену иконки и состояния подключения
+        self.bt_thread.connection_status.connect(self.update_bluetooth_status_icon)
 
         # 3. Кнопка «Забыть устройства»
-        self.btn_forget_paired_devices.clicked.connect(self.on_forget_devices_clicked)
+        if hasattr(self, 'btn_forget_paired_devices'):
+            self.btn_forget_paired_devices.clicked.connect(self.on_forget_devices_clicked)
+
+        # Устанавливаем иконку по умолчанию (отключен)
+        self.update_bluetooth_status_icon(False, "")
+
+    def update_bluetooth_status_icon(self, connected: bool, device_name: str):
+        """Обновляет иконку lbl_status_bluetooth в зависимости от подключения."""
+        icon_name = "bluetooth_on" if connected else "bluetooth_off"
+        color = "#00aaff" if connected else "#666666"
+
+        if hasattr(self, 'lbl_status_bluetooth'):
+            # Загружаем иконку с нужным цветом через ui_utils
+            pixmap = load_icon(icon_name, 24, 24, color)
+            self.lbl_status_bluetooth.setPixmap(pixmap)
+
+        if connected:
+            self.banner.show_notification("Bluetooth", f"Подключено: {device_name}")
+            print(f"[BT] Подключено устройство: {device_name}")
+        else:
+            print("[BT] Bluetooth отключен / ожидание соединения...")
 
     def on_ble_advertising_toggled(self, checked: bool):
         if checked:
@@ -454,10 +550,18 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
             self.lbl_ble_status.setText("Bluetooth отключен")
 
     def on_forget_devices_clicked(self):
-        # Вызываем очистку через поток
+        """Обработчик нажатия btn_forget_paired_devices."""
         success = self.bt_thread.forget_paired_devices()
+
         if success:
-            self.lbl_ble_status.setText("Все связи сброшены. Готово к новой паре")
+            print("[BT] Все сопряжённые устройства успешно удалены.")
+            if hasattr(self, 'lbl_ble_status'):
+                self.lbl_ble_status.setText("Устройства сброшены. Готово к парной связи.")
+            # Показываем уведомление на экране велокомпьютера
+            self.banner.show_notification("Bluetooth", "Все сохранённые устройства удалены")
+        else:
+            if hasattr(self, 'lbl_ble_status'):
+                self.lbl_ble_status.setText("Ошибка сброса устройств")
 
     def open_keyboard(self):
         dialog = T9Dialog(self, "Парк Горького")
@@ -830,6 +934,7 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
 
     def closeEvent(self, event):
         self.serial_thread.stop()
+        self.bt_thread.stop()
         self.save_settings()
         event.accept()
 

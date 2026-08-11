@@ -1,7 +1,7 @@
-import struct
-import sys
+import subprocess
 import logging
 from PyQt6.QtCore import QThread, pyqtSignal
+
 try:
     import dbus
     import dbus.mainloop.glib
@@ -12,27 +12,28 @@ except ImportError:
     HAS_DBUS = False
     AncsClient = None
 
-import subprocess
-
+log = logging.getLogger("bt_thread")
 
 class BluetoothThread(QThread):
-    notification_received = pyqtSignal(str, str, str, str)
+    notification_received = pyqtSignal(str, str, str, str)  # app_id, title, message, category
     now_playing_changed = pyqtSignal(dict)
-    status_changed = pyqtSignal(str)  # Сигнал для обновления lbl_ble_status
+    status_changed = pyqtSignal(str)
+    connection_status = pyqtSignal(bool, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.running = True
         self.client = None
+        self.loop = None
 
-    def forget_paired_devices(self):
-        """Удаляет все привязанные Bluetooth-устройства на Raspberry Pi."""
+    def forget_paired_devices(self) -> bool:
+        """Отключает активные устройства, удаляет их из сопряжённых и перезапускает BLE-адаптер."""
         if not HAS_DBUS:
-            print("[BT] Сброс устройств не поддерживается на Windows.")
+            log.warning("Сброс устройств не поддерживается вне Linux / DBus")
             return False
 
         try:
-            # Получаем список привязанных устройств
+            # 1. Получаем список всех сопряжённых устройств
             result = subprocess.run(["bluetoothctl", "paired-devices"], capture_output=True, text=True)
             lines = result.stdout.strip().split("\n")
 
@@ -40,90 +41,75 @@ class BluetoothThread(QThread):
                 parts = line.split()
                 if len(parts) >= 2 and parts[0] == "Device":
                     mac = parts[1]
-                    subprocess.run(["bluetoothctl", "remove", mac])
-                    print(f"[BT] Удалено устройство: {mac}")
+                    # Принудительно разрываем активное соединение
+                    subprocess.run(["bluetoothctl", "disconnect", mac], check=False)
+                    # Удаляем из базы данных BlueZ
+                    subprocess.run(["bluetoothctl", "remove", mac], check=False)
+                    log.info("Устройство отключено и удалено: %s", mac)
 
-            self.status_changed.emit("История устройств очищена")
+            # 2. Перезагружаем физический Bluetooth-адаптер (разрывает любые повисшие BLE-сессии)
+            subprocess.run(["sudo", "hciconfig", "hci0", "down"], check=False)
+            subprocess.run(["sudo", "hciconfig", "hci0", "up"], check=False)
+
+            # 3. Перезапускаем агент и видимость в ancs_client (если клиент запущен)
+            if self.client:
+                try:
+                    adapter_path = self.client.setup_adapter()
+                    self.client.register_advertisement(adapter_path)
+                except Exception as e:
+                    log.warning("Ошибка перезапуска рекламы BLE: %s", e)
+
+            self.status_changed.emit("Все устройства и соединения сброшены")
             return True
         except Exception as e:
-            print(f"[BT ERROR] Ошибка при очистке устройств: {e}")
+            log.error("Ошибка при жесткой очистке устройств: %s", e)
             return False
-class BluetoothThread(QThread):
-    # Сигналы для PyQt UI
-    notification_received = pyqtSignal(str, str, str, str)  # app_id, title, message, category
-    now_playing_changed = pyqtSignal(dict)  # track info[cite: 3]
-    connection_status = pyqtSignal(bool, str)  # connected, device_name
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.running = True
-        self.client = None
-
-    def setup_bluetooth_ui(self):
-        # 1. Привязываем сигнал обновления статуса к метке
-        self.bt_thread.status_changed.connect(self.lbl_ble_status.setText)
-
-        # 2. Переключатель Advertising (включение / выключение видимости)
-        self.rb_ble_advertising.toggled.connect(self.on_ble_advertising_toggled)
-
-        # 3. Кнопка «Забыть устройства»
-        self.btn_forget_paired_devices.clicked.connect(self.on_forget_devices_clicked)
-
-    def on_ble_advertising_toggled(self, checked: bool):
-        if checked:
-            self.lbl_ble_status.setText("Режим поиска (Advertising) включен")
-            # Если поток ещё не запущен — запускаем
-            if not self.bt_thread.isRunning():
-                self.bt_thread.start()
-        else:
-            self.lbl_ble_status.setText("Bluetooth отключен")
-
-    def on_forget_devices_clicked(self):
-        # Вызываем очистку через поток
-        success = self.bt_thread.forget_paired_devices()
-        if success:
-            self.lbl_ble_status.setText("Все связи сброшены. Готово к новой паре")
 
     def run(self):
         if not HAS_DBUS:
-            print("[BT WARNING] dbus/GLib не найдены. Эмуляция на ПК.")
+            log.warning("dbus/GLib не найдены. Эмуляция на ПК.")
             return
 
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
         bus = dbus.SystemBus()
 
-        # Импортируем классы из вашего ancs_client.py
-        # В данном контексте привязываем коллбеки к сигналам PyQt:
         self.client = AncsClient(bus)
 
-        # Переопределяем методы передачи данных в Qt
-        def _on_notif(app_id, title, message, category):
-            self.notification_received.emit(app_id, title, message, category)
-
-        def _on_media(now_playing):
-            self.now_playing_changed.emit(now_playing)
-
-        # Подменяем обработчики[cite: 3]
-        global on_notification, on_now_playing_changed
-        on_notification = _on_notif
-        on_now_playing_changed = _on_media
-
+        # Перехват глобальных функций обратного вызова ancs_client
+        import ancs_client
+        ancs_client.on_notification = lambda app_id, title, msg, cat: self.notification_received.emit(app_id, title, msg, cat)
+        ancs_client.on_now_playing_changed = lambda data: self.now_playing_changed.emit(data)
+        ancs_client.on_connection_status_changed = lambda conn, name: self.connection_status.emit(conn, name)
+        self.client.on_now_playing_changed = lambda data: self.now_playing_changed.emit(data)
         try:
             self.client.start()
-            loop = GLib.MainLoop()
-            loop.run()
+            self.loop = GLib.MainLoop()
+            self.loop.run()
         except Exception as e:
-            print(f"[BT ERROR] {e}")
+            log.error("Ошибка Bluetooth цикла: %s", e)
 
-    # Публичные методы для управления плеером из кнопок UI
+    def stop(self):
+        """Корректно останавливает GLib-цикл и ждёт завершения потока."""
+        self.running = False
+        if HAS_DBUS and self.loop is not None:
+            # quit() нужно вызывать из потока самого GLib-цикла, а не из GUI-потока —
+            # планируем вызов через idle_add
+            GLib.idle_add(self.loop.quit)
+        self.wait(3000)
+
     def play_pause(self):
-        if self.client:
-            self.client.toggle_play_pause()
+        if self.client: self.client.toggle_play_pause()
 
     def next_track(self):
-        if self.client:
-            self.client.next_track()
+        if self.client: self.client.next_track()
 
     def prev_track(self):
+        if self.client: self.client.previous_track()
+
+    def volume_up(self):
         if self.client:
-            self.client.previous_track()
+            self.client.volume_up()
+
+    def volume_down(self):
+        if self.client:
+            self.client.volume_down()
