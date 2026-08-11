@@ -8,17 +8,19 @@ import configparser
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from datetime import date, datetime
 
-from PyQt6 import uic
 from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer
 from PyQt6.QtGui import QIcon, QFontDatabase, QFont
 
+from ui_interface import Ui_MainWindow
 from T9Dialog import T9Dialog
 from ui_utils import load_icon
 from offline_map import OfflineMapWidget
 from NotificationBanner import NotificationBanner
 from BluetoothThread import BluetoothThread
 import serial.tools.list_ports
+
+#python -m PyQt6.uic.pyuic -x "D:\PyCharmProjects\KuroCube_BikeComp\resources\ui\KuroCube_BikeComp_UI.ui" -o src/ui_interface.py
 
 # --- ГЛОБАЛЬНЫЕ ПУТИ ---
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -185,11 +187,10 @@ class PlayerWidget(QWidget):
 # =========================================================
 # ГЛАВНОЕ ОКНО
 # =========================================================
-class BikeComputerWindow(QMainWindow):
+class BikeComputerWindow(QMainWindow,Ui_MainWindow):
     def __init__(self):
         super().__init__()
-        ui_path = os.path.join(SRC_DIR, 'KuroCube_BikeComp_UI.ui')
-        uic.loadUi(ui_path, self)
+        self.setupUi(self)
         #self.showFullScreen()
         #self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
 
