@@ -1,6 +1,8 @@
 import os
 import sys
 import json
+from fileinput import close
+
 import serial
 import math
 import threading
@@ -207,7 +209,7 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
     def __init__(self):
         super().__init__()
         self.setupUi(self)
-        self.showFullScreen()
+        #self.showFullScreen()
         #self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
 
         self.unread_count = 0
@@ -281,7 +283,13 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
         if hasattr(self, 'btn_settings_to_ui'):
             self.btn_settings_to_ui.clicked.connect(lambda: self.stackedWidget_2.setCurrentIndex(0))
         if hasattr(self, 'btn_settings_to_wifi'):
-            self.btn_settings_to_wifi.clicked.connect(lambda: self.stackedWidget_2.setCurrentIndex(1))
+            self.btn_settings_to_wifi.clicked.connect(lambda: self.stackedWidget_2.setCurrentIndex(3))
+        if hasattr(self, 'btn_settings_to_exit'):
+            self.btn_settings_to_exit.clicked.connect(lambda: self.stackedWidget_2.setCurrentIndex(2))
+
+        # Кнопки
+        if hasattr(self, 'btn_power_off'):
+            self.btn_power_off.clicked.connect(self.close)
         # Привязка кнопок управления плеером
         if hasattr(self, 'btn_pause_player'):
             self.btn_pause_player.clicked.connect(self.bt_thread.play_pause)
@@ -361,6 +369,9 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
             (self.btn_back_to_main, "btn_back", 36, 36, "#CCCCCC"),
             (self.btn_settings_to_ui, "globus", 36, 36, "#CCCCCC"),
             (self.btn_settings_to_wifi, "wifi", 36, 36, "#CCCCCC"),
+            (self.btn_settings_to_exit, "exit", 36, 36, "#CCCCCC"),
+            (self.btn_power_off, "power_off", 36, 36, "#CCCCCC"),
+            (self.btn_reboot, "reboot", 36, 36, "#CCCCCC"),
         ]
         for widget, icon_name, w, h, color in button_icons:
             if hasattr(self, widget.objectName()):
