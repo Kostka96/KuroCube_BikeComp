@@ -1,7 +1,7 @@
 import os
 import sys
 import json
-
+import socket
 import serial
 import math
 import threading
@@ -22,6 +22,7 @@ from NotificationBanner import NotificationBanner
 from BluetoothThread import BluetoothThread
 import serial.tools.list_ports
 
+
 IS_ON_RASPBERRY = os.path.exists("/proc/device-tree/model")
 
 #python -m PyQt6.uic.pyuic -x "D:\PyCharmProjects\KuroCube_BikeComp\resources\ui\KuroCube_BikeComp_UI.ui" -o src/ui_interface.py
@@ -32,7 +33,6 @@ BASE_DIR = os.path.abspath(os.path.join(SRC_DIR, ".."))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.ini")
 RESOURCES_DIR = os.path.join(BASE_DIR, "resources")
 TILES_DIR = os.path.join(RESOURCES_DIR, "OpenStreetMap")
-
 
 def load_custom_fonts():
     """Загружает все шрифты из папки resources/fonts/"""

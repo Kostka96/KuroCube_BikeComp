@@ -192,8 +192,7 @@ class AncsClient:
         self.device_path = None
         self._bound_chars = set()
 
-        # ANCS notification request state. Requests are serialized because
-        # Control Point/Data Source form one logical request/response stream.
+        # ANCS notification request state.
         self._attribute_queue = deque()
         self._attribute_request_active = False
         self._pending_uid = None
@@ -215,8 +214,7 @@ class AncsClient:
             "title": "", "duration": "", "elapsed": "0",
         }
 
-        # Instance callbacks. Module-level functions remain as defaults for
-        # standalone use and backward compatibility.
+        # Instance callbacks.
         self.on_notification = on_notification
         self.on_now_playing_changed = on_now_playing_changed
         self.on_connection_status_changed = on_connection_status_changed
@@ -246,7 +244,6 @@ class AncsClient:
         return adapter_path
 
     def register_agent(self):
-        # Keep the object referenced; otherwise its D-Bus export can disappear.
         self.agent = Agent(self.bus, AGENT_PATH)
         agent_manager = dbus.Interface(
             self.bus.get_object(BLUEZ_SERVICE_NAME, "/org/bluez"), AGENT_MANAGER_IFACE
@@ -360,6 +357,7 @@ class AncsClient:
         self.remote_command = None
         self.entity_update = None
         self.entity_attribute = None
+
         self._bound_chars.clear()
         self._media_registered = False
 
@@ -387,21 +385,16 @@ class AncsClient:
                 self._reset_gatt_state()
                 self.reset_now_playing()
 
-                # --- ДОБАВИТЬ СЛЕДУЮЩИЙ БЛОК ---
                 try:
                     adapter_path = self.find_adapter()
                     adapter = dbus.Interface(
                         self.bus.get_object(BLUEZ_SERVICE_NAME, adapter_path), DBUS_PROP_IFACE
                     )
-                    # Снова делаем устройство видимым для сопряженных телефонов
                     adapter.Set(ADAPTER_IFACE, "Discoverable", dbus.Boolean(True))
                     log.info("Устройство отключено: Discoverable снова включен")
-
-                    # Инициируем попытку фонового автоподключения
                     self.connect_known_devices()
                 except Exception as e:
                     log.warning("Не удалось включить Discoverable при отключении: %s", e)
-                # -------------------------------
 
             try:
                 dev_prop = dbus.Interface(
@@ -416,7 +409,19 @@ class AncsClient:
 
         if "ServicesResolved" in changed and bool(changed["ServicesResolved"]):
             log.info("Сервисы GATT инициализированы (ServicesResolved).")
+
+            # --- ПРИНУДИТЕЛЬНОЕ ПЕРЕСКАНИРОВАНИЕ GATT ---
+            om = dbus.Interface(self.bus.get_object(BLUEZ_SERVICE_NAME, "/"), DBUS_OM_IFACE)
+            for obj_path, interfaces in om.GetManagedObjects().items():
+                if GATT_SERVICE_IFACE in interfaces:
+                    self._maybe_bind_service(obj_path, interfaces[GATT_SERVICE_IFACE])
+                if GATT_CHRC_IFACE in interfaces:
+                    self._maybe_bind_characteristic(obj_path, interfaces[GATT_CHRC_IFACE])
+            # ------------------------------------------------
+
+            # AMS + ANCS: попробовать подписаться и запустить очередь
             self._register_media_attributes()
+            self._process_next_attribute_request()
 
     def _on_interfaces_added(self, path, interfaces):
         if DEVICE_IFACE in interfaces:
@@ -478,26 +483,34 @@ class AncsClient:
             self._subscribe(path, self._handle_notification_source)
             self._bound_chars.add(path)
             log.info("Bound Notification Source: %s", path)
+
         elif uuid == CONTROL_POINT_UUID:
             self.control_point = path
             self._bound_chars.add(path)
             log.info("Bound Control Point: %s", path)
+            # Если к этому моменту уже есть уведомления в очереди — пробуем их обработать
             self._process_next_attribute_request()
+
         elif uuid == DATA_SOURCE_UUID:
             self.data_source = path
             self._subscribe(path, self._handle_data_source)
             self._bound_chars.add(path)
             log.info("Bound Data Source: %s", path)
+            # Аналогично — запускаем обработку очереди, если всё готово
+            self._process_next_attribute_request()
+
         elif uuid == AMS_REMOTE_COMMAND_UUID:
             self.remote_command = path
             self._bound_chars.add(path)
             log.info("Bound AMS Remote Command: %s", path)
+
         elif uuid == AMS_ENTITY_UPDATE_UUID:
             self.entity_update = path
             self._bound_chars.add(path)
             self._subscribe(path, self._handle_entity_update)
             log.info("Bound AMS Entity Update: %s", path)
             self._register_media_attributes()
+
         elif uuid == AMS_ENTITY_ATTRIBUTE_UUID:
             self.entity_attribute = path
             self._bound_chars.add(path)
@@ -613,13 +626,11 @@ class AncsClient:
             length = struct.unpack("<H", buf[offset + 1:offset + 3])[0]
             value_end = offset + 3 + length
             if value_end > len(buf):
-                return  # fragmented packet; wait for more data
+                return
             raw_value = bytes(buf[offset + 3:value_end])
             attrs[attr_id] = raw_value.decode("utf-8", errors="replace")
             offset = value_end
 
-        # We requested exactly these three attributes. Do not wait for an
-        # arbitrary packet boundary; wait until all requested attributes are present.
         required = {ATTR_APP_IDENTIFIER, ATTR_TITLE, ATTR_MESSAGE}
         if not required.issubset(attrs):
             return
@@ -659,7 +670,6 @@ class AncsClient:
             return
 
         entity_id, attribute_id = data[0], data[1]
-        # AMS Entity Update format includes a flags byte before the UTF-8 value.
         value = bytes(data[3:]).decode("utf-8", errors="replace")
 
         if entity_id == AMS_ENTITY_PLAYER:
@@ -716,6 +726,8 @@ class AncsClient:
 
     def volume_down(self):
         self.send_remote_command(CMD_VOLUME_DOWN)
+
+
 
 
 def _setup_stdin_commands(client):
