@@ -1,7 +1,6 @@
 import os
 import sys
 import json
-from fileinput import close
 
 import serial
 import math
@@ -22,6 +21,8 @@ from offline_map import OfflineMapWidget
 from NotificationBanner import NotificationBanner
 from BluetoothThread import BluetoothThread
 import serial.tools.list_ports
+
+IS_ON_RASPBERRY = os.path.exists("/proc/device-tree/model")
 
 #python -m PyQt6.uic.pyuic -x "D:\PyCharmProjects\KuroCube_BikeComp\resources\ui\KuroCube_BikeComp_UI.ui" -o src/ui_interface.py
 
@@ -209,8 +210,10 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
     def __init__(self):
         super().__init__()
         self.setupUi(self)
-        #self.showFullScreen()
-        #self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+        if IS_ON_RASPBERRY:
+            self.showFullScreen()
+            self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+            self.setCursor(Qt.CursorShape.BlankCursor)
 
         self.unread_count = 0
         self.notifications_history = []
@@ -424,8 +427,8 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
                 (self.btn_change_unit_temp, 16, QFont.Weight.Normal),
                 (self.lbl_change_unit_time, 16, QFont.Weight.Normal),
                 (self.btn_change_unit_time, 16, QFont.Weight.Normal),
-                (self.lbl_change_unit_data, 16, QFont.Weight.Normal),
-                (self.btn_change_unit_data, 14, QFont.Weight.Normal),
+                (self.lbl_change_unit_date, 16, QFont.Weight.Normal),
+                (self.btn_change_unit_date, 14, QFont.Weight.Normal),
             ]
 
             for widget, size, weight in font_settings:

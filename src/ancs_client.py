@@ -2,14 +2,16 @@
 import struct
 import sys
 import logging
-import subprocess
+from collections import deque
 
 try:
     import dbus
     import dbus.service
     import dbus.mainloop.glib
+    from gi.repository import GLib
 except ImportError:
     dbus = None
+    GLib = None
 
 BLUEZ_SERVICE_NAME = "org.bluez"
 ADAPTER_IFACE = "org.bluez.Adapter1"
@@ -87,8 +89,10 @@ CMD_VOLUME_DOWN = 6
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("ancs")
 
+
 def on_connection_status_changed(connected: bool, device_name: str):
     log.info("Status changed: connected=%s, name=%s", connected, device_name)
+
 
 def on_notification(app_id, title, message, category):
     log.info("[%s] %s: %s — %s", category, app_id, title, message)
@@ -105,9 +109,8 @@ class Advertisement(dbus.service.Object):
         self.ad_type = "peripheral"
         self.local_name = DEVICE_NAME
         self.include_tx_power = False
-        # ANCS Service Solicit UUID (Apple Notification Center Service)
         self.solicit_uuids = ["7905F431-B5CE-4E99-A40F-4B1E122D00D0"]
-        dbus.service.Object.__init__(self, bus, self.path)
+        super().__init__(bus, self.path)
 
     def get_properties(self):
         properties = {
@@ -115,13 +118,10 @@ class Advertisement(dbus.service.Object):
             "LocalName": dbus.String(self.local_name),
             "IncludeTxPower": dbus.Boolean(self.include_tx_power),
         }
-
-        # Обязательно добавляем SolicitUUIDs для анонса ANCS в BlueZ
         if self.solicit_uuids:
             properties["SolicitUUIDs"] = dbus.Array(
                 [dbus.String(u) for u in self.solicit_uuids], signature="s"
             )
-
         return {LE_ADVERTISEMENT_IFACE: properties}
 
     @dbus.service.method(DBUS_PROP_IFACE, in_signature="s", out_signature="a{sv}")
@@ -135,6 +135,7 @@ class Advertisement(dbus.service.Object):
     @dbus.service.method(LE_ADVERTISEMENT_IFACE, in_signature="", out_signature="")
     def Release(self):
         log.info("Advertisement released")
+
 
 class Agent(dbus.service.Object):
     """Pairing agent с авто-подтверждением."""
@@ -150,7 +151,6 @@ class Agent(dbus.service.Object):
     @dbus.service.method(AGENT_IFACE, in_signature="os", out_signature="")
     def AuthorizeService(self, device, uuid):
         log.info("Agent: AuthorizeService %s for %s", uuid, device)
-        return
 
     @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="s")
     def RequestPinCode(self, device):
@@ -165,22 +165,18 @@ class Agent(dbus.service.Object):
     @dbus.service.method(AGENT_IFACE, in_signature="ouq", out_signature="")
     def DisplayPasskey(self, device, passkey, entered):
         log.info("Agent: DisplayPasskey %s (entered %d)", passkey, entered)
-        return
 
     @dbus.service.method(AGENT_IFACE, in_signature="os", out_signature="")
     def DisplayPinCode(self, device, pincode):
         log.info("Agent: DisplayPinCode %s", pincode)
-        return
 
     @dbus.service.method(AGENT_IFACE, in_signature="ou", out_signature="")
     def RequestConfirmation(self, device, passkey):
         log.info("Agent: RequestConfirmation from %s, passkey %s — AUTO-ACCEPTING", device, passkey)
-        return
 
     @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="")
     def RequestAuthorization(self, device):
         log.info("Agent: RequestAuthorization from %s — AUTO-ACCEPTING", device)
-        return
 
     @dbus.service.method(AGENT_IFACE, in_signature="", out_signature="")
     def Cancel(self):
@@ -194,18 +190,36 @@ class AncsClient:
         self.control_point = None
         self.data_source = None
         self.device_path = None
-        self._data_buffer = bytearray()
-        self._pending_uid = None
-        self._pending_app_id = None
-        self._pending_category = "Other"
         self._bound_chars = set()
+
+        # ANCS notification request state. Requests are serialized because
+        # Control Point/Data Source form one logical request/response stream.
+        self._attribute_queue = deque()
+        self._attribute_request_active = False
+        self._pending_uid = None
+        self._pending_category = "Other"
+        self._data_buffer = bytearray()
+
+        # Keep D-Bus objects alive for the whole client lifetime.
+        self.agent = None
+        self.advertisement = None
+
+        # AMS state.
         self.remote_command = None
         self.entity_update = None
         self.entity_attribute = None
+        self._media_registered = False
+
         self.now_playing = {
             "player_name": "", "state": "", "artist": "", "album": "",
-            "title": "", "duration": "",
+            "title": "", "duration": "", "elapsed": "0",
         }
+
+        # Instance callbacks. Module-level functions remain as defaults for
+        # standalone use and backward compatibility.
+        self.on_notification = on_notification
+        self.on_now_playing_changed = on_now_playing_changed
+        self.on_connection_status_changed = on_connection_status_changed
 
     def find_adapter(self):
         om = dbus.Interface(self.bus.get_object(BLUEZ_SERVICE_NAME, "/"), DBUS_OM_IFACE)
@@ -218,8 +232,9 @@ class AncsClient:
 
     def setup_adapter(self):
         adapter_path = self.find_adapter()
-        adapter = dbus.Interface(self.bus.get_object(BLUEZ_SERVICE_NAME, adapter_path), DBUS_PROP_IFACE)
-
+        adapter = dbus.Interface(
+            self.bus.get_object(BLUEZ_SERVICE_NAME, adapter_path), DBUS_PROP_IFACE
+        )
         log.info("Configuring adapter...")
         adapter.Set(ADAPTER_IFACE, "Powered", dbus.Boolean(True))
         adapter.Set(ADAPTER_IFACE, "Pairable", dbus.Boolean(True))
@@ -231,36 +246,30 @@ class AncsClient:
         return adapter_path
 
     def register_agent(self):
-        agent = Agent(self.bus, AGENT_PATH)
+        # Keep the object referenced; otherwise its D-Bus export can disappear.
+        self.agent = Agent(self.bus, AGENT_PATH)
         agent_manager = dbus.Interface(
             self.bus.get_object(BLUEZ_SERVICE_NAME, "/org/bluez"), AGENT_MANAGER_IFACE
         )
 
-        # 1. Пытаемся удалить старый агент (если висит от прошлого запуска)
         try:
             agent_manager.UnregisterAgent(AGENT_PATH)
             log.info("Unregistered old agent")
         except dbus.exceptions.DBusException as e:
             log.info("No old agent to unregister: %s", e)
 
-        # 2. Пробуем разные типы агентов
         agent_types = ["KeyboardDisplay", "NoInputNoOutput", "DisplayOnly", "DisplayYesNo"]
-        registered = False
-
         for agent_type in agent_types:
             try:
                 log.info("Trying RegisterAgent with type '%s'...", agent_type)
                 agent_manager.RegisterAgent(AGENT_PATH, agent_type)
                 log.info("RegisterAgent succeeded with '%s'", agent_type)
-                registered = True
                 break
             except dbus.exceptions.DBusException as e:
                 log.warning("RegisterAgent '%s' failed: %s", agent_type, e)
-
-        if not registered:
+        else:
             raise RuntimeError("Failed to register any agent type")
 
-        # 3. Пытаемся сделать агента дефолтным
         try:
             agent_manager.RequestDefaultAgent(AGENT_PATH)
             log.info("RequestDefaultAgent succeeded")
@@ -269,13 +278,14 @@ class AncsClient:
 
     def register_advertisement(self, adapter_path):
         try:
-            ad = Advertisement(self.bus, 0)
+            self.advertisement = Advertisement(self.bus, 0)
             ad_manager = dbus.Interface(
                 self.bus.get_object(BLUEZ_SERVICE_NAME, adapter_path),
                 LE_ADVERTISING_MANAGER_IFACE,
             )
             ad_manager.RegisterAdvertisement(
-                ad.path, {},
+                self.advertisement.path,
+                {},
                 reply_handler=lambda: log.info("Advertising started as '%s'", DEVICE_NAME),
                 error_handler=lambda e: log.warning("Advertising error: %s", e),
             )
@@ -283,27 +293,26 @@ class AncsClient:
             log.warning("RegisterAdvertisement exception: %s", e)
 
     def connect_known_devices(self):
-        """Пытается установить соединение со всеми ранее сохранёнными (Paired) устройствами."""
         try:
             om = dbus.Interface(self.bus.get_object(BLUEZ_SERVICE_NAME, "/"), DBUS_OM_IFACE)
             objects = om.GetManagedObjects()
-
             for path, interfaces in objects.items():
-                if DEVICE_IFACE in interfaces:
-                    props = interfaces[DEVICE_IFACE]
-                    paired = bool(props.get("Paired", False))
-                    connected = bool(props.get("Connected", False))
-
-                    if paired and not connected:
-                        log.info("Найден сохраненный iPhone (%s). Пробуем Connect()...", path)
-                        dev_iface = dbus.Interface(
-                            self.bus.get_object(BLUEZ_SERVICE_NAME, path), DEVICE_IFACE
-                        )
-                        # Асинхронно вызываем Connect, чтобы не блокировать поток
-                        dev_iface.Connect(
-                            reply_handler=lambda: log.info("Успешное авто-подключение!"),
-                            error_handler=lambda e: log.debug("Фоновое авто-подключение ожидается от iOS: %s", e)
-                        )
+                if DEVICE_IFACE not in interfaces:
+                    continue
+                props = interfaces[DEVICE_IFACE]
+                paired = bool(props.get("Paired", False))
+                connected = bool(props.get("Connected", False))
+                if paired and not connected:
+                    log.info("Найден сохраненный device (%s). Пробуем Connect()...", path)
+                    dev_iface = dbus.Interface(
+                        self.bus.get_object(BLUEZ_SERVICE_NAME, path), DEVICE_IFACE
+                    )
+                    dev_iface.Connect(
+                        reply_handler=lambda: log.info("Успешное авто-подключение!"),
+                        error_handler=lambda e: log.debug(
+                            "Фоновое авто-подключение не выполнено: %s", e
+                        ),
+                    )
         except Exception as e:
             log.warning("Ошибка при попытке автоподключения: %s", e)
 
@@ -315,13 +324,12 @@ class AncsClient:
         om = dbus.Interface(self.bus.get_object(BLUEZ_SERVICE_NAME, "/"), DBUS_OM_IFACE)
         om.connect_to_signal("InterfacesAdded", self._on_interfaces_added)
 
-        # Слушаем изменения свойств (подключение / отключение)
         self.bus.add_signal_receiver(
             self._on_device_properties_changed,
             signal_name="PropertiesChanged",
             dbus_interface=DBUS_PROP_IFACE,
             arg0=DEVICE_IFACE,
-            path_keyword="path"
+            path_keyword="path",
         )
 
         for path, interfaces in om.GetManagedObjects().items():
@@ -329,29 +337,86 @@ class AncsClient:
                 self._maybe_bind_service(path, interfaces[GATT_SERVICE_IFACE])
             if GATT_CHRC_IFACE in interfaces:
                 self._maybe_bind_characteristic(path, interfaces[GATT_CHRC_IFACE])
+
         self.connect_known_devices()
+
+    def reset_now_playing(self):
+        self.now_playing = {
+            "player_name": "",
+            "state": "paused",
+            "artist": "",
+            "album": "",
+            "title": "Disconnected",
+            "duration": "0",
+            "elapsed": "0",
+        }
+        if callable(self.on_now_playing_changed):
+            self.on_now_playing_changed(dict(self.now_playing))
+
+    def _reset_gatt_state(self):
+        self.notification_source = None
+        self.control_point = None
+        self.data_source = None
+        self.remote_command = None
+        self.entity_update = None
+        self.entity_attribute = None
+        self._bound_chars.clear()
+        self._media_registered = False
+
+        self._attribute_queue.clear()
+        self._attribute_request_active = False
+        self._pending_uid = None
+        self._pending_category = "Other"
+        self._data_buffer.clear()
 
     def _on_device_properties_changed(self, interface, changed, invalidated, path):
         if "Connected" in changed:
             connected = bool(changed["Connected"])
-
-            # Если телефон успешно подключился — выключаем режим Discoverable (перестает мигать)
             if connected:
                 try:
                     adapter_path = self.find_adapter()
-                    adapter = dbus.Interface(self.bus.get_object(BLUEZ_SERVICE_NAME, adapter_path), DBUS_PROP_IFACE)
+                    adapter = dbus.Interface(
+                        self.bus.get_object(BLUEZ_SERVICE_NAME, adapter_path), DBUS_PROP_IFACE
+                    )
                     adapter.Set(ADAPTER_IFACE, "Discoverable", dbus.Boolean(False))
                     log.info("Устройство подключено: Discoverable отключен")
                 except Exception as e:
                     log.warning("Не удалось отключить Discoverable: %s", e)
+            else:
+                log.info("BLE device disconnected; resetting GATT/ANCS state")
+                self._reset_gatt_state()
+                self.reset_now_playing()
 
-            # Получаем имя устройства
+                # --- ДОБАВИТЬ СЛЕДУЮЩИЙ БЛОК ---
+                try:
+                    adapter_path = self.find_adapter()
+                    adapter = dbus.Interface(
+                        self.bus.get_object(BLUEZ_SERVICE_NAME, adapter_path), DBUS_PROP_IFACE
+                    )
+                    # Снова делаем устройство видимым для сопряженных телефонов
+                    adapter.Set(ADAPTER_IFACE, "Discoverable", dbus.Boolean(True))
+                    log.info("Устройство отключено: Discoverable снова включен")
+
+                    # Инициируем попытку фонового автоподключения
+                    self.connect_known_devices()
+                except Exception as e:
+                    log.warning("Не удалось включить Discoverable при отключении: %s", e)
+                # -------------------------------
+
             try:
-                dev_prop = dbus.Interface(self.bus.get_object(BLUEZ_SERVICE_NAME, path), DBUS_PROP_IFACE)
+                dev_prop = dbus.Interface(
+                    self.bus.get_object(BLUEZ_SERVICE_NAME, path), DBUS_PROP_IFACE
+                )
                 name = str(dev_prop.Get(DEVICE_IFACE, "Name"))
             except Exception:
                 name = "iPhone"
-            on_connection_status_changed(connected, name)
+
+            if callable(self.on_connection_status_changed):
+                self.on_connection_status_changed(connected, name)
+
+        if "ServicesResolved" in changed and bool(changed["ServicesResolved"]):
+            log.info("Сервисы GATT инициализированы (ServicesResolved).")
+            self._register_media_attributes()
 
     def _on_interfaces_added(self, path, interfaces):
         if DEVICE_IFACE in interfaces:
@@ -360,10 +425,12 @@ class AncsClient:
             paired = bool(props.get("Paired", False))
             connected = bool(props.get("Connected", False))
             name = str(props.get("Name", "iPhone"))
-            log.info("Device event: %s | addr=%s | paired=%s | connected=%s", path, addr, paired, connected)
+            log.info(
+                "Device event: %s | addr=%s | paired=%s | connected=%s",
+                path, addr, paired, connected,
+            )
             self.device_path = path
 
-            # 1. Автоматически ставим Trusted=True для автоподключения при старте
             try:
                 dev_prop = dbus.Interface(
                     self.bus.get_object(BLUEZ_SERVICE_NAME, path), DBUS_PROP_IFACE
@@ -373,20 +440,21 @@ class AncsClient:
             except Exception as e:
                 log.warning("Failed to set Trusted: %s", e)
 
-            # 2. Если подключается неопознанный девайс — делаем Pair()
             if connected and not paired:
                 log.info("Device connected but not paired — triggering Pair()")
                 try:
                     dev_iface = dbus.Interface(
                         self.bus.get_object(BLUEZ_SERVICE_NAME, path), DEVICE_IFACE
                     )
-                    dev_iface.Pair(reply_handler=lambda: log.info("Pair() succeeded"),
-                                   error_handler=lambda e: log.warning("Pair() failed: %s", e))
+                    dev_iface.Pair(
+                        reply_handler=lambda: log.info("Pair() succeeded"),
+                        error_handler=lambda e: log.warning("Pair() failed: %s", e),
+                    )
                 except Exception as e:
                     log.warning("Could not call Pair(): %s", e)
 
-            # 3. Сигнализируем в UI о статусе
-            on_connection_status_changed(connected, name)
+            if callable(self.on_connection_status_changed):
+                self.on_connection_status_changed(connected, name)
 
         if GATT_SERVICE_IFACE in interfaces:
             self._maybe_bind_service(path, interfaces[GATT_SERVICE_IFACE])
@@ -394,7 +462,7 @@ class AncsClient:
             self._maybe_bind_characteristic(path, interfaces[GATT_CHRC_IFACE])
 
     def _maybe_bind_service(self, path, props):
-        uuid = props.get("UUID", "").lower()
+        uuid = str(props.get("UUID", "")).lower()
         if uuid == ANCS_SERVICE_UUID:
             log.info("Found ANCS service at %s", path)
         elif uuid == AMS_SERVICE_UUID:
@@ -403,7 +471,8 @@ class AncsClient:
     def _maybe_bind_characteristic(self, path, props):
         if path in self._bound_chars:
             return
-        uuid = props.get("UUID", "").lower()
+        uuid = str(props.get("UUID", "")).lower()
+
         if uuid == NOTIFICATION_SOURCE_UUID:
             self.notification_source = path
             self._subscribe(path, self._handle_notification_source)
@@ -413,6 +482,7 @@ class AncsClient:
             self.control_point = path
             self._bound_chars.add(path)
             log.info("Bound Control Point: %s", path)
+            self._process_next_attribute_request()
         elif uuid == DATA_SOURCE_UUID:
             self.data_source = path
             self._subscribe(path, self._handle_data_source)
@@ -424,8 +494,8 @@ class AncsClient:
             log.info("Bound AMS Remote Command: %s", path)
         elif uuid == AMS_ENTITY_UPDATE_UUID:
             self.entity_update = path
-            self._subscribe(path, self._handle_entity_update)
             self._bound_chars.add(path)
+            self._subscribe(path, self._handle_entity_update)
             log.info("Bound AMS Entity Update: %s", path)
             self._register_media_attributes()
         elif uuid == AMS_ENTITY_ATTRIBUTE_UUID:
@@ -434,9 +504,6 @@ class AncsClient:
             log.info("Bound AMS Entity Attribute: %s", path)
 
     def _subscribe(self, char_path, handler):
-        chrc = dbus.Interface(
-            self.bus.get_object(BLUEZ_SERVICE_NAME, char_path), GATT_CHRC_IFACE
-        )
         props = dbus.Interface(
             self.bus.get_object(BLUEZ_SERVICE_NAME, char_path), DBUS_PROP_IFACE
         )
@@ -445,31 +512,55 @@ class AncsClient:
             if interface != GATT_CHRC_IFACE:
                 return
             if "Value" in changed:
-                handler(bytes(bytearray(changed["Value"])))
+                try:
+                    handler(bytes(bytearray(changed["Value"])))
+                except Exception:
+                    log.exception("Error in GATT notification handler for %s", char_path)
 
         props.connect_to_signal("PropertiesChanged", on_props_changed)
         try:
+            chrc = dbus.Interface(
+                self.bus.get_object(BLUEZ_SERVICE_NAME, char_path), GATT_CHRC_IFACE
+            )
             chrc.StartNotify()
         except dbus.exceptions.DBusException as e:
             log.warning("StartNotify failed for %s: %s", char_path, e)
 
     def _handle_notification_source(self, data):
         if len(data) < 8:
+            log.warning("Short ANCS Notification Source packet: %d bytes", len(data))
             return
+
         event_id, event_flags, category_id, category_count, uid = struct.unpack("<BBBBI", data[:8])
+        if event_id == EVENT_ID_NOTIFICATION_REMOVED:
+            log.debug("Ignoring removed notification uid=%s", uid)
+            return
         if event_id not in (EVENT_ID_NOTIFICATION_ADDED, EVENT_ID_NOTIFICATION_MODIFIED):
             return
+
         category = CATEGORY_NAMES.get(category_id, str(category_id))
         log.info("Notification uid=%s category=%s", uid, category)
         self._request_attributes(uid, category)
 
     def _request_attributes(self, uid, category):
-        if self.control_point is None:
-            log.warning("Control Point not ready, dropping notification %s", uid)
+        if self.control_point is None or self.data_source is None:
+            log.warning("ANCS Control Point/Data Source not ready, queueing notification %s", uid)
+        self._attribute_queue.append((uid, category))
+        self._process_next_attribute_request()
+
+    def _process_next_attribute_request(self):
+        if self._attribute_request_active:
             return
+        if not self._attribute_queue:
+            return
+        if self.control_point is None or self.data_source is None:
+            return
+
+        uid, category = self._attribute_queue.popleft()
         self._pending_uid = uid
         self._pending_category = category
-        self._data_buffer = bytearray()
+        self._data_buffer.clear()
+        self._attribute_request_active = True
 
         payload = bytearray()
         payload += struct.pack("<B", COMMAND_GET_NOTIFICATION_ATTRIBUTES)
@@ -478,60 +569,87 @@ class AncsClient:
         payload += struct.pack("<B", ATTR_TITLE) + struct.pack("<H", 32)
         payload += struct.pack("<B", ATTR_MESSAGE) + struct.pack("<H", 100)
 
-        chrc = dbus.Interface(
-            self.bus.get_object(BLUEZ_SERVICE_NAME, self.control_point), GATT_CHRC_IFACE
-        )
         try:
+            chrc = dbus.Interface(
+                self.bus.get_object(BLUEZ_SERVICE_NAME, self.control_point), GATT_CHRC_IFACE
+            )
             chrc.WriteValue(list(payload), {})
+            log.debug("Requested ANCS attributes for uid=%s", uid)
         except dbus.exceptions.DBusException as e:
-            log.warning("WriteValue failed: %s", e)
+            log.warning("WriteValue failed for uid=%s: %s", uid, e)
+            self._finish_attribute_request()
+
+    def _finish_attribute_request(self):
+        self._attribute_request_active = False
+        self._pending_uid = None
+        self._pending_category = "Other"
+        self._data_buffer.clear()
+        self._process_next_attribute_request()
 
     def _handle_data_source(self, data: bytes):
+        if not self._attribute_request_active:
+            log.debug("Ignoring ANCS Data Source packet without active request")
+            return
+
         self._data_buffer += data
         buf = self._data_buffer
         if len(buf) < 5:
             return
+
         command_id, uid = struct.unpack("<BI", buf[:5])
         if command_id != COMMAND_GET_NOTIFICATION_ATTRIBUTES:
+            log.warning("Unexpected ANCS Data Source command id=%s", command_id)
+            self._finish_attribute_request()
             return
 
-        # Если сообщение с этим UID уже обработано, пропускаем
-        if getattr(self, "_last_processed_uid", None) == uid:
+        if self._pending_uid is not None and uid != self._pending_uid:
+            log.warning("Unexpected ANCS response UID=%s, expected=%s", uid, self._pending_uid)
             return
 
         offset = 5
         attrs = {}
         while offset + 3 <= len(buf):
             attr_id = buf[offset]
-            length = struct.unpack("<H", buf[offset + 1: offset + 3])[0]
+            length = struct.unpack("<H", buf[offset + 1:offset + 3])[0]
             value_end = offset + 3 + length
             if value_end > len(buf):
-                return  # ждем фрагменты
-            value = bytes(buf[offset + 3: value_end]).decode("utf-8", errors="replace")
-            attrs[attr_id] = value
+                return  # fragmented packet; wait for more data
+            raw_value = bytes(buf[offset + 3:value_end])
+            attrs[attr_id] = raw_value.decode("utf-8", errors="replace")
             offset = value_end
+
+        # We requested exactly these three attributes. Do not wait for an
+        # arbitrary packet boundary; wait until all requested attributes are present.
+        required = {ATTR_APP_IDENTIFIER, ATTR_TITLE, ATTR_MESSAGE}
+        if not required.issubset(attrs):
+            return
 
         app_id = attrs.get(ATTR_APP_IDENTIFIER, "")
         title = attrs.get(ATTR_TITLE, "")
         message = attrs.get(ATTR_MESSAGE, "")
-        category = getattr(self, "_pending_category", "Other")
+        category = self._pending_category
 
-        # Запоминаем обработанный UID и очищаем буфер
-        self._last_processed_uid = uid
-        self._data_buffer = bytearray()
+        if callable(self.on_notification):
+            self.on_notification(app_id, title, message, category)
 
-        on_notification(app_id, title, message, category)
+        self._finish_attribute_request()
 
     def _register_media_attributes(self):
-        if self.entity_update is None:
+        if self.entity_update is None or self._media_registered:
             return
+
         chrc = dbus.Interface(
             self.bus.get_object(BLUEZ_SERVICE_NAME, self.entity_update), GATT_CHRC_IFACE
         )
         try:
-            chrc.WriteValue([AMS_ENTITY_PLAYER, AMS_PLAYER_ATTR_NAME, AMS_PLAYER_ATTR_PLAYBACK_INFO], {})
-            chrc.WriteValue([AMS_ENTITY_TRACK, AMS_TRACK_ATTR_ARTIST, AMS_TRACK_ATTR_ALBUM,
-                             AMS_TRACK_ATTR_TITLE, AMS_TRACK_ATTR_DURATION], {})
+            chrc.WriteValue(
+                [AMS_ENTITY_PLAYER, AMS_PLAYER_ATTR_NAME, AMS_PLAYER_ATTR_PLAYBACK_INFO], {}
+            )
+            chrc.WriteValue(
+                [AMS_ENTITY_TRACK, AMS_TRACK_ATTR_ARTIST, AMS_TRACK_ATTR_ALBUM,
+                 AMS_TRACK_ATTR_TITLE, AMS_TRACK_ATTR_DURATION], {}
+            )
+            self._media_registered = True
             log.info("Subscribed to AMS updates")
         except dbus.exceptions.DBusException as e:
             log.warning("AMS subscribe failed: %s", e)
@@ -541,6 +659,7 @@ class AncsClient:
             return
 
         entity_id, attribute_id = data[0], data[1]
+        # AMS Entity Update format includes a flags byte before the UTF-8 value.
         value = bytes(data[3:]).decode("utf-8", errors="replace")
 
         if entity_id == AMS_ENTITY_PLAYER:
@@ -549,25 +668,20 @@ class AncsClient:
             elif attribute_id == AMS_PLAYER_ATTR_PLAYBACK_INFO:
                 parts = value.split(",") if value else []
                 state_code = parts[0] if len(parts) > 0 else ""
-                # parts[2] — текущая позиция воспроизведения в секундах
                 elapsed = parts[2] if len(parts) > 2 else "0"
-
                 self.now_playing["state"] = PLAYBACK_STATE_NAMES.get(state_code, state_code)
                 self.now_playing["elapsed"] = elapsed
-
         elif entity_id == AMS_ENTITY_TRACK:
             key = {
                 AMS_TRACK_ATTR_ARTIST: "artist",
                 AMS_TRACK_ATTR_ALBUM: "album",
                 AMS_TRACK_ATTR_TITLE: "title",
-                AMS_TRACK_ATTR_DURATION: "duration"
+                AMS_TRACK_ATTR_DURATION: "duration",
             }.get(attribute_id)
-
             if key:
                 self.now_playing[key] = value
 
-        # Уведомляем подписчиков об изменениях
-        if callable(getattr(self, 'on_now_playing_changed', None)):
+        if callable(self.on_now_playing_changed):
             self.on_now_playing_changed(dict(self.now_playing))
 
     def send_remote_command(self, command_id):
@@ -582,32 +696,56 @@ class AncsClient:
         except dbus.exceptions.DBusException as e:
             log.warning("Remote command failed: %s", e)
 
-    def play(self): self.send_remote_command(CMD_PLAY)
-    def pause(self): self.send_remote_command(CMD_PAUSE)
-    def toggle_play_pause(self): self.send_remote_command(CMD_TOGGLE_PLAY_PAUSE)
-    def next_track(self): self.send_remote_command(CMD_NEXT_TRACK)
-    def previous_track(self): self.send_remote_command(CMD_PREVIOUS_TRACK)
-    def volume_up(self): self.send_remote_command(CMD_VOLUME_UP)
-    def volume_down(self): self.send_remote_command(CMD_VOLUME_DOWN)
+    def play(self):
+        self.send_remote_command(CMD_PLAY)
+
+    def pause(self):
+        self.send_remote_command(CMD_PAUSE)
+
+    def toggle_play_pause(self):
+        self.send_remote_command(CMD_TOGGLE_PLAY_PAUSE)
+
+    def next_track(self):
+        self.send_remote_command(CMD_NEXT_TRACK)
+
+    def previous_track(self):
+        self.send_remote_command(CMD_PREVIOUS_TRACK)
+
+    def volume_up(self):
+        self.send_remote_command(CMD_VOLUME_UP)
+
+    def volume_down(self):
+        self.send_remote_command(CMD_VOLUME_DOWN)
+
 
 def _setup_stdin_commands(client):
     commands = {
-        "play": client.play, "pause": client.pause,
-        "toggle": client.toggle_play_pause, "next": client.next_track,
-        "prev": client.previous_track, "previous": client.previous_track,
+        "play": client.play,
+        "pause": client.pause,
+        "toggle": client.toggle_play_pause,
+        "next": client.next_track,
+        "prev": client.previous_track,
+        "previous": client.previous_track,
         "volup": client.volume_up,
         "voldown": client.volume_down,
     }
+
     def on_stdin_ready(source, condition):
         line = sys.stdin.readline().strip().lower()
-        if not line: return True
+        if not line:
+            return True
         fn = commands.get(line)
-        if fn: fn()
+        if fn:
+            fn()
         return True
+
     GLib.io_add_watch(sys.stdin, GLib.IO_IN, on_stdin_ready)
 
 
 def main():
+    if dbus is None or GLib is None:
+        raise RuntimeError("Python D-Bus/GLib modules are not available")
+
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
     client = AncsClient(bus)

@@ -1398,7 +1398,7 @@ border-radius: 20px;</string>
         <string notr="true">color: rgb(255, 255, 255);</string>
        </property>
        <property name="text">
-        <string>123456789012345678121212</string>
+        <string/>
        </property>
        <property name="alignment">
         <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
@@ -9621,7 +9621,7 @@ border-radius: 20px;</string>
        </rect>
       </property>
       <property name="currentIndex">
-       <number>3</number>
+       <number>0</number>
       </property>
       <widget class="QWidget" name="page">
        <widget class="QFrame" name="f_change_lang">
@@ -10698,7 +10698,7 @@ background-color: rgba(255, 255, 255, 0);</string>
          </property>
         </widget>
        </widget>
-       <widget class="QFrame" name="f_change_data">
+       <widget class="QFrame" name="f_change_date">
         <property name="geometry">
          <rect>
           <x>330</x>
@@ -10729,7 +10729,7 @@ border-radius: 20px;</string>
         <property name="frameShadow">
          <enum>QFrame::Raised</enum>
         </property>
-        <widget class="QLabel" name="lbl_change_unit_data">
+        <widget class="QLabel" name="lbl_change_unit_date">
          <property name="geometry">
           <rect>
            <x>10</x>
@@ -10941,7 +10941,7 @@ background-color: rgba(255, 255, 255, 0);</string>
           <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
          </property>
         </widget>
-        <widget class="QPushButton" name="btn_change_unit_data">
+        <widget class="QPushButton" name="btn_change_unit_date">
          <property name="geometry">
           <rect>
            <x>0</x>
