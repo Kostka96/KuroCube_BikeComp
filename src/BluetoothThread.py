@@ -38,47 +38,41 @@ class BluetoothThread(QThread):
     def _on_connection_status_changed(self, connected, name):
         self.connection_status.emit(bool(connected), str(name))
 
-    def forget_paired_devices(self) -> bool:
-        """Отключает активные устройства, удаляет pairing и перезапускает BLE-адаптер."""
-        if not HAS_DBUS:
-            log.warning("Сброс устройств не поддерживается вне Linux / DBus")
-            return False
-
+    def forget_paired_devices(self):
         try:
-            result = subprocess.run(
-                ["bluetoothctl", "paired-devices"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if result.returncode != 0:
-                log.warning("bluetoothctl paired-devices failed: %s", result.stderr.strip())
+            bus = dbus.SystemBus()
+            om = dbus.Interface(bus.get_object("org.bluez", "/"), "org.freedesktop.DBus.ObjectManager")
+            objects = om.GetManagedObjects()
 
-            for line in result.stdout.strip().splitlines():
-                parts = line.split()
-                if len(parts) < 2 or parts[0] != "Device":
+            adapter_path = None
+            for path, interfaces in objects.items():
+                if "org.bluez.Adapter1" in interfaces:
+                    adapter_path = path
+                    break
+
+            if adapter_path is None:
+                print("[BT] Адаптер не найден")
+                return False
+
+            adapter = dbus.Interface(bus.get_object("org.bluez", adapter_path), "org.bluez.Adapter1")
+
+            removed_any = False
+
+            for path, interfaces in objects.items():
+                if "org.bluez.Device1" not in interfaces:
                     continue
-                mac = parts[1]
-                subprocess.run(["bluetoothctl", "disconnect", mac], check=False)
-                subprocess.run(["bluetoothctl", "remove", mac], check=False)
-                log.info("Устройство отключено и удалено: %s", mac)
 
-            # Сохраняем исходную архитектуру проекта: hci0 используется явно.
-            subprocess.run(["sudo", "hciconfig", "hci0", "down"], check=False)
-            subprocess.run(["sudo", "hciconfig", "hci0", "up"], check=False)
-
-            if self.client:
+                print(f"[BT] Удаляю устройство: {path}")
                 try:
-                    adapter_path = self.client.setup_adapter()
-                    self.client.register_agent()
-                    self.client.register_advertisement(adapter_path)
+                    adapter.RemoveDevice(path)
+                    removed_any = True
                 except Exception as e:
-                    log.warning("Ошибка перезапуска BLE после сброса: %s", e)
+                    print(f"[BT] Ошибка RemoveDevice: {e}")
 
-            self.status_changed.emit("Все устройства и соединения сброшены")
-            return True
+            return removed_any
+
         except Exception as e:
-            log.exception("Ошибка при жесткой очистке устройств: %s", e)
+            print(f"[BT] Ошибка forget_paired_devices: {e}")
             return False
 
     def run(self):

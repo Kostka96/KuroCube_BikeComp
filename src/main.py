@@ -210,10 +210,10 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
     def __init__(self):
         super().__init__()
         self.setupUi(self)
-        if IS_ON_RASPBERRY:
-            self.showFullScreen()
-            self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-            self.setCursor(Qt.CursorShape.BlankCursor)
+        #if IS_ON_RASPBERRY:
+        #    self.showFullScreen()
+        #    self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+        #    self.setCursor(Qt.CursorShape.BlankCursor)
 
         self.unread_count = 0
         self.notifications_history = []
@@ -564,14 +564,12 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
             self.lbl_ble_status.setText("Bluetooth отключен")
 
     def on_forget_devices_clicked(self):
-        """Обработчик нажатия btn_forget_paired_devices."""
         success = self.bt_thread.forget_paired_devices()
 
         if success:
             print("[BT] Все сопряжённые устройства успешно удалены.")
             if hasattr(self, 'lbl_ble_status'):
                 self.lbl_ble_status.setText("Устройства сброшены. Готово к парной связи.")
-            # Показываем уведомление на экране велокомпьютера
             self.banner.show_notification("Bluetooth", "Все сохранённые устройства удалены")
         else:
             if hasattr(self, 'lbl_ble_status'):

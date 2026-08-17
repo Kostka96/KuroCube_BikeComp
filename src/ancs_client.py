@@ -395,7 +395,6 @@ class AncsClient:
                     self.connect_known_devices()
                 except Exception as e:
                     log.warning("Не удалось включить Discoverable при отключении: %s", e)
-
             try:
                 dev_prop = dbus.Interface(
                     self.bus.get_object(BLUEZ_SERVICE_NAME, path), DBUS_PROP_IFACE
