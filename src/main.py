@@ -1,7 +1,7 @@
 import os
 import sys
 import json
-import socket
+
 import serial
 import math
 import threading
@@ -19,6 +19,7 @@ from ui_utils import load_icon
 from ui_utils import MarqueeLabel
 from offline_map import OfflineMapWidget
 from NotificationBanner import NotificationBanner
+from VolumeHUD import VolumeHUD
 from BluetoothThread import BluetoothThread
 import serial.tools.list_ports
 
@@ -210,16 +211,18 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
     def __init__(self):
         super().__init__()
         self.setupUi(self)
-        #if IS_ON_RASPBERRY:
-        #    self.showFullScreen()
-        #    self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-        #    self.setCursor(Qt.CursorShape.BlankCursor)
+        if IS_ON_RASPBERRY:
+            self.showFullScreen()
+            self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+            self.setCursor(Qt.CursorShape.BlankCursor)
 
         self.unread_count = 0
         self.notifications_history = []
 
         # 1. Создаем виджет всплывающего уведомления
         self.banner = NotificationBanner(self)
+        self.volume_hud = VolumeHUD(self)
+        self.current_volume = 0.5
 
         # 2. Запускаем Bluetooth Поток
         self.bt_thread = BluetoothThread()
@@ -274,6 +277,8 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
         self.setup_settings_signals()
         self.load_language(self.current_lang)
 
+        self.update_message_badge()
+
         # Переключение экранов
         if hasattr(self, 'btn_settings'):
             self.btn_settings.clicked.connect(lambda: self.stackedWidget.setCurrentIndex(1))
@@ -291,6 +296,8 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
             self.btn_settings_to_exit.clicked.connect(lambda: self.stackedWidget_2.setCurrentIndex(2))
 
         # Кнопки
+        if hasattr(self, 'btn_message'):
+            self.btn_message.clicked.connect(self.open_messages_screen)
         if hasattr(self, 'btn_power_off'):
             self.btn_power_off.clicked.connect(self.close)
         # Привязка кнопок управления плеером
@@ -301,9 +308,9 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
         if hasattr(self, 'btn_prev'):
             self.btn_prev.clicked.connect(self.bt_thread.prev_track)
         if hasattr(self, 'btn_volume_plus'):
-            self.btn_volume_plus.clicked.connect(self.bt_thread.volume_up)
+            self.btn_volume_plus.clicked.connect(self.on_volume_up_clicked)
         if hasattr(self, 'btn_volume_minus'):
-            self.btn_volume_minus.clicked.connect(self.bt_thread.volume_down)
+            self.btn_volume_minus.clicked.connect(self.on_volume_down_clicked)
 
         if hasattr(self, 'lbl_music_name'):
             parent = self.lbl_music_name.parentWidget()
@@ -447,6 +454,16 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
             if hasattr(self, 'lbl_max_time_music'):
                 self.lbl_max_time_music.setText(get_remaining_time(self.current_elapsed, self.current_duration))
 
+    def on_volume_up_clicked(self):
+        self.bt_thread.volume_up()
+        self.current_volume = min(1.0, self.current_volume + 0.0625)  # +1 шаг iOS (6.25%)
+        self.volume_hud.set_volume(self.current_volume)
+
+    def on_volume_down_clicked(self):
+        self.bt_thread.volume_down()
+        self.current_volume = max(0.0, self.current_volume - 0.0625)
+        self.volume_hud.set_volume(self.current_volume)
+
     def update_now_playing(self, data: dict):
         # 1. Обновление иконки Play/Pause
         state = str(data.get("state", "")).lower()
@@ -495,6 +512,18 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
             self.lbl_current_time_music.setText(format_time_seconds(self.current_elapsed))
         if hasattr(self, 'lbl_max_time_music'):
             self.lbl_max_time_music.setText(get_remaining_time(self.current_elapsed, self.current_duration))
+        if "volume" in data:
+            try:
+                vol = float(data["volume"])
+                self.current_volume = vol
+                self.volume_hud.set_volume(vol)
+            except (ValueError, TypeError):
+                pass
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'volume_hud'):
+            self.volume_hud.update_position()
 
     def handle_new_notification(self, app_id, title, message, category):
         # Добавляем в историю
@@ -510,13 +539,26 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
         self.banner.show_notification(display_title, message)
 
     def update_message_badge(self):
-        # Обновление текста на кнопке сообщений
-        if self.unread_count > 0:
-            self.btn_message.setText(f"💬 ({self.unread_count})")
-            self.btn_message.setStyleSheet("color: #ff3333; font-weight: bold;")
-        else:
-            self.btn_message.setText("💬")
-            self.btn_message.setStyleSheet("")
+        """Обновляет иконку конверта и счётчик непрочитанных сообщений."""
+        # 1. Управление бейджем/лейблом количества (lbl_current_messages)
+        if hasattr(self, 'lbl_current_messages'):
+            if self.unread_count > 0:
+                self.lbl_current_messages.setText(str(self.unread_count))
+                self.lbl_current_messages.show()
+            else:
+                self.lbl_current_messages.setText("")
+                self.lbl_current_messages.hide()
+
+        # 2. Переключение иконки на кнопке (btn_message)
+        if hasattr(self, 'btn_message'):
+            # Если есть сообщения — mail_notification_true, иначе — mail_notification_false
+            icon_name = "message_square" if self.unread_count > 0 else "message"
+
+            # Загружаем иконку с нужным размером (например, 24x24 или 32x32)
+            pixmap = load_icon(icon_name, 32, 32, "#CCCCCC")
+            self.btn_message.setIcon(QIcon(pixmap))
+            self.btn_message.setIconSize(QSize(32, 32))
+            self.btn_message.setText("")  # Очищаем текст, так как теперь используем только картинки
 
     def open_messages_screen(self):
         # При открытии списка сбрасываем счётчик

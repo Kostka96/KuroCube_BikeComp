@@ -653,7 +653,7 @@ class AncsClient:
         )
         try:
             chrc.WriteValue(
-                [AMS_ENTITY_PLAYER, AMS_PLAYER_ATTR_NAME, AMS_PLAYER_ATTR_PLAYBACK_INFO], {}
+                [AMS_ENTITY_PLAYER, AMS_PLAYER_ATTR_NAME, AMS_PLAYER_ATTR_PLAYBACK_INFO, AMS_PLAYER_ATTR_VOLUME], {}
             )
             chrc.WriteValue(
                 [AMS_ENTITY_TRACK, AMS_TRACK_ATTR_ARTIST, AMS_TRACK_ATTR_ALBUM,
@@ -680,6 +680,8 @@ class AncsClient:
                 elapsed = parts[2] if len(parts) > 2 else "0"
                 self.now_playing["state"] = PLAYBACK_STATE_NAMES.get(state_code, state_code)
                 self.now_playing["elapsed"] = elapsed
+            elif attribute_id == AMS_PLAYER_ATTR_VOLUME:
+                self.now_playing["volume"] = value
         elif entity_id == AMS_ENTITY_TRACK:
             key = {
                 AMS_TRACK_ATTR_ARTIST: "artist",
