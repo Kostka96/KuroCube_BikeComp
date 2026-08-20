@@ -19,6 +19,8 @@ from ui_utils import load_icon
 from ui_utils import MarqueeLabel
 from offline_map import OfflineMapWidget
 from NotificationBanner import NotificationBanner
+from NotificationsPanel import NotificationsPanel
+
 from VolumeHUD import VolumeHUD
 from BluetoothThread import BluetoothThread
 import serial.tools.list_ports
@@ -216,8 +218,11 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
             self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
             self.setCursor(Qt.CursorShape.BlankCursor)
 
-        self.unread_count = 0
         self.notifications_history = []
+        self.unread_count = 0
+
+        self.notif_panel = NotificationsPanel(parent=self)
+        self.notif_panel.cleared.connect(self.on_notifications_cleared)
 
         # 1. Создаем виджет всплывающего уведомления
         self.banner = NotificationBanner(self)
@@ -296,6 +301,10 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
             self.btn_settings_to_exit.clicked.connect(lambda: self.stackedWidget_2.setCurrentIndex(2))
 
         # Кнопки
+        if hasattr(self, 'btn_message'):
+            self.btn_message.clicked.connect(self.toggle_notifications_panel)
+
+        self.update_message_badge()
         if hasattr(self, 'btn_message'):
             self.btn_message.clicked.connect(self.open_messages_screen)
         if hasattr(self, 'btn_power_off'):
@@ -442,6 +451,41 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
                 if hasattr(self, widget.objectName()):
                     widget.setFont(QFont(family, size, weight))
 
+    def toggle_notifications_panel(self):
+        """Открывает/закрывает шторку и сбрасывает счетчик при открытии."""
+        self.notif_panel.toggle()
+
+        # При открытии панели сбрасываем бейдж непрочитанных
+        if self.notif_panel._is_open:
+            self.unread_count = 0
+            self.update_message_badge()
+
+    def add_incoming_notification(self, title: str, message: str, category: str = "SocialMedia"):
+        """Вызывается при получении ANCS-уведомления с iPhone."""
+        time_str = datetime.now().strftime("%H:%M")
+
+        entry = {
+            "title": title,
+            "message": message,
+            "time": time_str,
+            "category": category  # "SocialMedia", "IncomingCall", "Email", "NewsFlash" и т.д.
+        }
+
+        # Новые уведомления кладем в начало списка
+        self.notifications_history.insert(0, entry)
+        self.notif_panel.set_notifications(self.notifications_history)
+
+        # Увеличиваем счетчик, если шторка сейчас закрыта
+        if not self.notif_panel._is_open:
+            self.unread_count += 1
+            self.update_message_badge()
+
+    def on_notifications_cleared(self):
+        """Слот обработки нажатия 'Очистить всё' в шторке."""
+        self.notifications_history.clear()
+        self.unread_count = 0
+        self.update_message_badge()
+
     def _tick_music_time(self):
         if self.is_music_playing:
             self.current_elapsed += 1
@@ -524,7 +568,14 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
         super().resizeEvent(event)
         if hasattr(self, 'volume_hud'):
             self.volume_hud.update_position()
-
+        super().resizeEvent(event)
+        if hasattr(self, 'notif_panel'):
+            w, h = self.notif_panel._panel_size()
+            if self.notif_panel._is_open:
+                self.notif_panel.resize(w, h)
+            else:
+                self.notif_panel.resize(w, h)
+                self.notif_panel.move(0, -h)
     def handle_new_notification(self, app_id, title, message, category):
         # Добавляем в историю
         notif_data = {"app": app_id, "title": title, "msg": message, "cat": category}
@@ -551,7 +602,6 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
 
         # 2. Переключение иконки на кнопке (btn_message)
         if hasattr(self, 'btn_message'):
-            # Если есть сообщения — mail_notification_true, иначе — mail_notification_false
             icon_name = "message_square" if self.unread_count > 0 else "message"
 
             # Загружаем иконку с нужным размером (например, 24x24 или 32x32)
