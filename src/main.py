@@ -220,7 +220,7 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
 
         self.notifications_history = []
         self.unread_count = 0
-
+        self.cards = {}
         self.notif_panel = NotificationsPanel(parent=self)
         self.notif_panel.cleared.connect(self.on_notifications_cleared)
 
@@ -231,10 +231,12 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
 
         # 2. Запускаем Bluetooth Поток
         self.bt_thread = BluetoothThread()
-        self.bt_thread.notification_received.connect(self.handle_new_notification)
+        self.bt_thread.notification_received.connect(self.add_incoming_notification)
         self.bt_thread.now_playing_changed.connect(self.update_now_playing)
         self.bt_thread.start()
         self.setup_bluetooth_ui()
+
+        self.processed_uids = set()
 
         FONTS = load_custom_fonts()
         self.config_file = CONFIG_PATH
@@ -303,10 +305,9 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
         # Кнопки
         if hasattr(self, 'btn_message'):
             self.btn_message.clicked.connect(self.toggle_notifications_panel)
-
         self.update_message_badge()
-        if hasattr(self, 'btn_message'):
-            self.btn_message.clicked.connect(self.open_messages_screen)
+        #if hasattr(self, 'btn_message'):
+        #    self.btn_message.clicked.connect(self.open_messages_screen)
         if hasattr(self, 'btn_power_off'):
             self.btn_power_off.clicked.connect(self.close)
         # Привязка кнопок управления плеером
@@ -451,6 +452,59 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
                 if hasattr(self, widget.objectName()):
                     widget.setFont(QFont(family, size, weight))
 
+
+    # Тестовые данные для проверки интерфейса
+        self.add_incoming_notification("Telegram", "Привет! Карточки работают отлично.", "SocialMedia")
+        self.add_incoming_notification("Входной звонок", " +7 (999) 000-00-001111111111111111111111122312312421412412411111", "IncomingCall")
+
+    def add_incoming_notification(self, app_id: str, title: str, message: str, category: str = "SocialMedia", uid: int = None):
+        """Вызывается при получении ANCS-уведомления с iPhone."""
+        time_str = datetime.now().strftime("%H:%M")
+
+        # Если заголовок пустой, берём имя приложения из app_id
+        if not title or not title.strip():
+            title = app_id.split(".")[-1].capitalize() if app_id else "Уведомление"
+
+        # 1. Ищем, есть ли уже в истории карточка с таким UID
+        existing_entry = None
+        if uid is not None:
+            for entry in self.notifications_history:
+                if entry.get("uid") == uid:
+                    existing_entry = entry
+                    break
+
+        # 2. Если карточка есть — обновляем текст (MODIFIED пакет)
+        if existing_entry:
+            existing_entry["title"] = title
+            existing_entry["message"] = message
+            existing_entry["category"] = category
+            existing_entry["time"] = time_str
+        else:
+            # 3. Если это новое уведомление — создаём запись
+            entry = {
+                "uid": uid,
+                "app_id": app_id,
+                "title": title,
+                "message": message,
+                "time": time_str,
+                "category": category
+            }
+            self.notifications_history.insert(0, entry)
+
+            # Увеличиваем счётчик непрочитанных, если шторка закрыта
+            if hasattr(self, "notif_panel") and not self.notif_panel._is_open:
+                self.unread_count += 1
+                if hasattr(self, "update_message_badge"):
+                    self.update_message_badge()
+
+            # Показываем всплывающий баннер поверх экрана
+            if hasattr(self, "banner"):
+                self.banner.show_notification(title, message)
+
+        # 4. Перерисовываем панель шторки
+        if hasattr(self, "notif_panel"):
+            self.notif_panel.set_notifications(self.notifications_history)
+
     def toggle_notifications_panel(self):
         """Открывает/закрывает шторку и сбрасывает счетчик при открытии."""
         self.notif_panel.toggle()
@@ -458,26 +512,6 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
         # При открытии панели сбрасываем бейдж непрочитанных
         if self.notif_panel._is_open:
             self.unread_count = 0
-            self.update_message_badge()
-
-    def add_incoming_notification(self, title: str, message: str, category: str = "SocialMedia"):
-        """Вызывается при получении ANCS-уведомления с iPhone."""
-        time_str = datetime.now().strftime("%H:%M")
-
-        entry = {
-            "title": title,
-            "message": message,
-            "time": time_str,
-            "category": category  # "SocialMedia", "IncomingCall", "Email", "NewsFlash" и т.д.
-        }
-
-        # Новые уведомления кладем в начало списка
-        self.notifications_history.insert(0, entry)
-        self.notif_panel.set_notifications(self.notifications_history)
-
-        # Увеличиваем счетчик, если шторка сейчас закрыта
-        if not self.notif_panel._is_open:
-            self.unread_count += 1
             self.update_message_badge()
 
     def on_notifications_cleared(self):
@@ -576,18 +610,6 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
             else:
                 self.notif_panel.resize(w, h)
                 self.notif_panel.move(0, -h)
-    def handle_new_notification(self, app_id, title, message, category):
-        # Добавляем в историю
-        notif_data = {"app": app_id, "title": title, "msg": message, "cat": category}
-        self.notifications_history.append(notif_data)
-
-        # Увеличиваем счетчик
-        self.unread_count += 1
-        self.update_message_badge()
-
-        # Показываем всплывающий баннер
-        display_title = title if title else app_id
-        self.banner.show_notification(display_title, message)
 
     def update_message_badge(self):
         """Обновляет иконку конверта и счётчик непрочитанных сообщений."""
@@ -610,10 +632,10 @@ class BikeComputerWindow(QMainWindow,Ui_MainWindow):
             self.btn_message.setIconSize(QSize(32, 32))
             self.btn_message.setText("")  # Очищаем текст, так как теперь используем только картинки
 
-    def open_messages_screen(self):
-        # При открытии списка сбрасываем счётчик
-        self.unread_count = 0
-        self.update_message_badge()
+    #def open_messages_screen(self):
+    #    # При открытии списка сбрасываем счётчик
+    #    self.unread_count = 0
+    #    self.update_message_badge()
 
     def setup_bluetooth_ui(self):
         # 1. Сигналы статуса

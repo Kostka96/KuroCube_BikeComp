@@ -94,8 +94,9 @@ def on_connection_status_changed(connected: bool, device_name: str):
     log.info("Status changed: connected=%s, name=%s", connected, device_name)
 
 
-def on_notification(app_id, title, message, category):
-    log.info("[%s] %s: %s — %s", category, app_id, title, message)
+# Добавляем uid первым аргументом
+def on_notification(uid, app_id, title, message, category):
+    log.info("[%s] [UID:%s] %s: %s — %s", category, uid, app_id, title, message)
 
 
 def on_now_playing_changed(now_playing):
@@ -409,16 +410,13 @@ class AncsClient:
         if "ServicesResolved" in changed and bool(changed["ServicesResolved"]):
             log.info("Сервисы GATT инициализированы (ServicesResolved).")
 
-            # --- ПРИНУДИТЕЛЬНОЕ ПЕРЕСКАНИРОВАНИЕ GATT ---
             om = dbus.Interface(self.bus.get_object(BLUEZ_SERVICE_NAME, "/"), DBUS_OM_IFACE)
             for obj_path, interfaces in om.GetManagedObjects().items():
                 if GATT_SERVICE_IFACE in interfaces:
                     self._maybe_bind_service(obj_path, interfaces[GATT_SERVICE_IFACE])
                 if GATT_CHRC_IFACE in interfaces:
                     self._maybe_bind_characteristic(obj_path, interfaces[GATT_CHRC_IFACE])
-            # ------------------------------------------------
 
-            # AMS + ANCS: попробовать подписаться и запустить очередь
             self._register_media_attributes()
             self._process_next_attribute_request()
 
@@ -487,7 +485,6 @@ class AncsClient:
             self.control_point = path
             self._bound_chars.add(path)
             log.info("Bound Control Point: %s", path)
-            # Если к этому моменту уже есть уведомления в очереди — пробуем их обработать
             self._process_next_attribute_request()
 
         elif uuid == DATA_SOURCE_UUID:
@@ -495,7 +492,6 @@ class AncsClient:
             self._subscribe(path, self._handle_data_source)
             self._bound_chars.add(path)
             log.info("Bound Data Source: %s", path)
-            # Аналогично — запускаем обработку очереди, если всё готово
             self._process_next_attribute_request()
 
         elif uuid == AMS_REMOTE_COMMAND_UUID:
@@ -578,8 +574,9 @@ class AncsClient:
         payload += struct.pack("<B", COMMAND_GET_NOTIFICATION_ATTRIBUTES)
         payload += struct.pack("<I", uid)
         payload += struct.pack("<B", ATTR_APP_IDENTIFIER)
-        payload += struct.pack("<B", ATTR_TITLE) + struct.pack("<H", 32)
-        payload += struct.pack("<B", ATTR_MESSAGE) + struct.pack("<H", 100)
+        # Запрашиваем 128 байт для Title и 512 байт для Message
+        payload += struct.pack("<B", ATTR_TITLE) + struct.pack("<H", 128)
+        payload += struct.pack("<B", ATTR_MESSAGE) + struct.pack("<H", 512)
 
         try:
             chrc = dbus.Interface(
@@ -632,15 +629,24 @@ class AncsClient:
 
         required = {ATTR_APP_IDENTIFIER, ATTR_TITLE, ATTR_MESSAGE}
         if not required.issubset(attrs):
+            log.warning("Missing attributes in ANCS response, resetting request queue")
+            self._finish_attribute_request()
             return
 
         app_id = attrs.get(ATTR_APP_IDENTIFIER, "")
-        title = attrs.get(ATTR_TITLE, "")
-        message = attrs.get(ATTR_MESSAGE, "")
+        title = attrs.get(ATTR_TITLE, "").strip()
+        message = attrs.get(ATTR_MESSAGE, "").strip()
         category = self._pending_category
 
+        if not title:
+            title = app_id.split(".")[-1].capitalize() if app_id else "Уведомление"
+
+        # Если объект обернут Qt-сигналами во внешнем коде
+        if hasattr(self, "notification_received") and hasattr(self.notification_received, "emit"):
+            self.notification_received.emit(title, message, category)
+
         if callable(self.on_notification):
-            self.on_notification(app_id, title, message, category)
+            self.on_notification(app_id, title, message, category, uid)
 
         self._finish_attribute_request()
 
@@ -727,8 +733,6 @@ class AncsClient:
 
     def volume_down(self):
         self.send_remote_command(CMD_VOLUME_DOWN)
-
-
 
 
 def _setup_stdin_commands(client):

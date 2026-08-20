@@ -3,8 +3,8 @@ from PyQt6.QtWidgets import (
     QWidget, QPushButton, QGraphicsDropShadowEffect
 )
 from PyQt6.QtCore import Qt, QPropertyAnimation, QPoint, QEasingCurve, pyqtSignal
-from PyQt6.QtGui import QColor
-
+from PyQt6.QtGui import QColor, QFontMetrics
+from PyQt6.QtWidgets import QLabel, QSizePolicy
 from ui_utils import load_icon
 
 ACCENT_COLOR = "#39e07a"
@@ -18,6 +18,35 @@ CATEGORY_ICONS = {
     "SocialMedia": "message",
     "Other": "bell",
 }
+
+
+class ElidedLabel(QLabel):
+    """QLabel, который автоматически обрезает текст многоточием (...) при нехватке ширины."""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._full_text = text
+
+        # Разрешаем лейблу сжиматься меньше размера полного текста
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def setText(self, text: str):
+        self._full_text = str(text) if text is not None else ""
+        self._update_text()
+
+    def resizeEvent(self, event):
+        self._update_text()
+        super().resizeEvent(event)
+
+    def _update_text(self):
+        if not self._full_text or self.width() <= 0:
+            super().setText(self._full_text)
+            return
+
+        metrics = QFontMetrics(self.font())
+        elided = metrics.elidedText(self._full_text, Qt.TextElideMode.ElideRight, self.width())
+        super().setText(elided)
 
 
 class NotificationCard(QFrame):
@@ -47,7 +76,8 @@ class NotificationCard(QFrame):
         else:
             icon_label.setPixmap(load_icon(icon_name, 20, 20, ACCENT_COLOR))
 
-        title_label = QLabel(title)
+        # Заголовок с авто-обрезанием многоточием
+        title_label = ElidedLabel(title)
         title_label.setObjectName("cardTitle")
 
         time_label = QLabel(time_str)
@@ -55,9 +85,9 @@ class NotificationCard(QFrame):
 
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
-        header_row.addWidget(title_label)
-        header_row.addStretch(1)
-        header_row.addWidget(time_label)
+        # title_label забирает всё свободное пространство (stretch=1)
+        header_row.addWidget(title_label, 1)
+        header_row.addWidget(time_label, 0, Qt.AlignmentFlag.AlignRight)
 
         msg_label = QLabel(message)
         msg_label.setObjectName("cardMessage")
@@ -120,8 +150,7 @@ class NotificationsPanel(QFrame):
             QPushButton {
                 background-color: transparent;
                 color: #e2665f;
-                font-size: 13px;
-                border: none;
+                font-size: 26px;
             }
         """)
         self.clear_btn.clicked.connect(self._on_clear_clicked)
@@ -144,6 +173,7 @@ class NotificationsPanel(QFrame):
         list_container.setLayout(self.list_layout)
 
         self.scroll_area = QScrollArea()
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
         self.scroll_area.setWidget(list_container)
@@ -178,12 +208,16 @@ class NotificationsPanel(QFrame):
         while self.list_layout.count():
             item = self.list_layout.takeAt(0)
             widget = item.widget()
-            if widget:
+            if widget and widget != self.empty_label:
                 widget.deleteLater()
+            elif widget == self.empty_label:
+                self.empty_label.setParent(None)
 
         if not entries:
             self.list_layout.addWidget(self.empty_label)
+            self.empty_label.show()
         else:
+            self.empty_label.hide()
             for entry in entries:
                 card = NotificationCard(
                     entry.get("title", ""),

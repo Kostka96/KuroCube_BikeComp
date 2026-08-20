@@ -7,6 +7,7 @@ try:
     import dbus.mainloop.glib
     from gi.repository import GLib
     from ancs_client import AncsClient
+
     HAS_DBUS = True
 except ImportError:
     HAS_DBUS = False
@@ -18,7 +19,8 @@ log = logging.getLogger("bt_thread")
 
 
 class BluetoothThread(QThread):
-    notification_received = pyqtSignal(str, str, str, str)
+    # Сигнал принимает 5 параметров, включая int uid
+    notification_received = pyqtSignal(str, str, str, str, int)  # app_id, title, message, category, uid
     now_playing_changed = pyqtSignal(dict)
     status_changed = pyqtSignal(str)
     connection_status = pyqtSignal(bool, str)
@@ -29,8 +31,9 @@ class BluetoothThread(QThread):
         self.client = None
         self.loop = None
 
-    def _on_notification(self, app_id, title, message, category):
-        self.notification_received.emit(app_id, title, message, category)
+    def _on_notification(self, app_id, title, message, category, uid=0):
+        """Перехватывает уведомление от AncsClient и пробрасывает его в Qt-сигнал."""
+        self.notification_received.emit(app_id, title, message, category, int(uid or 0))
 
     def _on_now_playing_changed(self, data):
         self.now_playing_changed.emit(data)
@@ -55,7 +58,6 @@ class BluetoothThread(QThread):
                 return False
 
             adapter = dbus.Interface(bus.get_object("org.bluez", adapter_path), "org.bluez.Adapter1")
-
             removed_any = False
 
             for path, interfaces in objects.items():
@@ -82,10 +84,11 @@ class BluetoothThread(QThread):
 
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
         bus = dbus.SystemBus()
+
+        # Создаем единый экземпляр клиента
         self.client = AncsClient(bus)
 
-        # Callbacks принадлежат экземпляру AncsClient, поэтому глобальное
-        # состояние модуля ancs_client больше не меняется.
+        # Подключаем колбэки клиента к внутренним методам потока
         self.client.on_notification = self._on_notification
         self.client.on_now_playing_changed = self._on_now_playing_changed
         self.client.on_connection_status_changed = self._on_connection_status_changed
